@@ -1,0 +1,48 @@
+{
+  "name": "fairflow-notification-service",
+  "version": "1.0.0",
+  "description": "Notification gRPC microservice",
+  "private": true,
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "build": "nest build",
+    "start:dev": "nest start --watch",
+    "start:prod": "node dist/main.js",
+    "check": "tsc --noEmit",
+    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "test": "jest --passWithNoTests"
+  },
+  "dependencies": {
+    "@fairflow/shared": "*",
+    "@grpc/grpc-js": "^1.14.0",
+    "@nestjs/common": "^11.1.17",
+    "@nestjs/config": "^4.0.3",
+    "@nestjs/core": "^11.1.17",
+    "@nestjs/microservices": "^11.1.17",
+    "@nestjs/platform-express": "^11.1.17",
+    "amqplib": "^0.10.5",
+    "ioredis": "^5.4.1",
+    "mongodb": "^6.21.0",
+    "nodemailer": "^7.0.9",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@nestjs/cli": "^11.0.0",
+    "@types/node": "^22.19.15",
+    "@types/nodemailer": "^7.0.2",
+    "@typescript-eslint/eslint-plugin": "^8.57.1",
+    "@typescript-eslint/parser": "^8.57.1",
+    "eslint": "^10.0.3",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-prettier": "^5.2.1",
+    "typescript": "^5.9.3"
+  },
+  "jest": {
+    "preset": "<rootDir>/../..",
+    "rootDir": "src"
+  }
+}

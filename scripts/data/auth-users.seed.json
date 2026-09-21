@@ -1,0 +1,45 @@
+[
+  {
+    "login": "admin",
+    "email": "admin@fairflow.local",
+    "name": "Администратор",
+    "password": "admin",
+    "devProjectOwner": true
+  },
+  {
+    "login": "anna",
+    "email": "anna@example.com",
+    "name": "Петрова Анна",
+    "password": "123Qwe"
+  },
+  {
+    "login": "dmitry",
+    "email": "dmitry@example.com",
+    "name": "Козлов Дмитрий",
+    "password": "123Qwe"
+  },
+  {
+    "login": "sergey",
+    "email": "sergey@example.com",
+    "name": "Иванов Сергей",
+    "password": "123Qwe"
+  },
+  {
+    "login": "maria",
+    "email": "maria@example.com",
+    "name": "Сидорова Мария",
+    "password": "123Qwe"
+  },
+  {
+    "login": "elena",
+    "email": "elena@example.com",
+    "name": "Смирнова Елена",
+    "password": "123Qwe"
+  },
+  {
+    "login": "igor",
+    "email": "igor@example.com",
+    "name": "Волков Игорь",
+    "password": "123Qwe"
+  }
+]

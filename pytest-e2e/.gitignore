@@ -1,0 +1,15 @@
+# protoc output — regenerate with `make protos`, never commit
+generated/
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# local configuration (secrets live here, only .env.example is tracked)
+.env

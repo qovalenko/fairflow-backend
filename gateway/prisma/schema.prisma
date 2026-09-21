@@ -1,0 +1,135 @@
+// Gateway service: all tables in PostgreSQL schema "gateway" (never public)
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  schemas  = ["gateway"]
+}
+
+model User {
+  id        String   @id
+  email     String   @unique
+  login     String   @unique
+  password  String
+  name      String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  roles   UserRole[]
+  groups  UserGroup[]
+
+  @@map("gateway_users")
+  @@schema("gateway")
+}
+
+model Role {
+  id          String   @id
+  code        String   @unique
+  name        String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  users       UserRole[]
+  permissions RolePermission[]
+
+  @@map("gateway_roles")
+  @@schema("gateway")
+}
+
+model Permission {
+  id          String   @id
+  code        String   @unique
+  name        String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  roles  RolePermission[]
+  groups GroupPermission[]
+
+  @@map("gateway_permissions")
+  @@schema("gateway")
+}
+
+model Group {
+  id          String   @id
+  code        String   @unique
+  name        String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  users       UserGroup[]
+  permissions GroupPermission[]
+
+  @@map("gateway_groups")
+  @@schema("gateway")
+}
+
+model UserRole {
+  userId String @map("user_id")
+  roleId String @map("role_id")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("gateway_user_roles")
+  @@schema("gateway")
+}
+
+model UserGroup {
+  userId  String @map("user_id")
+  groupId String @map("group_id")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([userId, groupId])
+  @@map("gateway_user_groups")
+  @@schema("gateway")
+}
+
+model RolePermission {
+  roleId       String @map("role_id")
+  permissionId String @map("permission_id")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("gateway_role_permissions")
+  @@schema("gateway")
+}
+
+model GroupPermission {
+  groupId      String @map("group_id")
+  permissionId String @map("permission_id")
+
+  group      Group      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, permissionId])
+  @@map("gateway_group_permissions")
+  @@schema("gateway")
+}
+
+model EntityChangeLog {
+  id         String   @id
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  action     String
+  userId     String?  @map("user_id")
+  payload    Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("gateway_entity_change_logs")
+  @@schema("gateway")
+}

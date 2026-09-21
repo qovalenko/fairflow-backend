@@ -1,0 +1,12 @@
+{
+  // Типопроверка одноразовых скриптов (`scripts/*.ts`). Отдельным конфигом,
+  // потому что расширять `include` основного нельзя: `nest build` пересчитал бы
+  // rootDir по общему предку и уехал бы с `dist/main.js` на `dist/src/main.js`.
+  // Подключён в `npm run check` — миграция дедуп-ключей не должна тихо сгнить.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/**/*", "scripts/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

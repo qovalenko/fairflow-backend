@@ -1,0 +1,52 @@
+{
+  "name": "@fairflow/shared",
+  "version": "1.0.0",
+  "description": "Shared contracts, event envelope, tracing headers, error types for Fairflow services",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "jest --passWithNoTests"
+  },
+  "jest": {
+    "preset": "<rootDir>/../..",
+    "rootDir": "src",
+    "coverageThreshold": {
+      "global": {
+        "lines": 30,
+        "statements": 30,
+        "functions": 34,
+        "branches": 25
+      }
+    }
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.12.4",
+    "@grpc/proto-loader": "^0.7.13",
+    "@grpc/reflection": "^1.0.4",
+    "amqplib": "^0.10.5",
+    "uuidv7": "^1.1.0"
+  },
+  "peerDependencies": {
+    "@nestjs/common": "^11",
+    "@nestjs/core": "^11",
+    "@nestjs/microservices": "^11",
+    "mongodb": "*",
+    "rxjs": "*"
+  },
+  "peerDependenciesMeta": {
+    "@nestjs/common": { "optional": true },
+    "@nestjs/core": { "optional": true },
+    "@nestjs/microservices": { "optional": true },
+    "mongodb": { "optional": true },
+    "rxjs": { "optional": true }
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}

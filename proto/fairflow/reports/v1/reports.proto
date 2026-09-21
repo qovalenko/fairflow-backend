@@ -1,0 +1,396 @@
+syntax = "proto3";
+package fairflow.reports.v1;
+
+message Report {
+  string id = 1;
+  string project_id = 2;
+  string name = 3;
+  string description = 4;
+  string kind = 5;
+  int64 created_at = 6;
+  int64 updated_at = 7;
+  // FR-MREP-8: ключ встроенного пресета ('sales'|'funnel'|'clients'|'activity'|
+  // 'sources'|'by_managers'), пустая строка у пользовательских отчётов. Фронт
+  // сопоставляет вкладку с отчётом по нему, а не по индексу в списке.
+  string preset_key = 8;
+  // TODO-466 (FR-REPORTS-390): уровень доступа определения отчёта —
+  // 'personal' (виден только автору) | 'project' (виден участникам проекта).
+  // До этого поля фронт увозил выбор радиокнопки СТРОКОЙ ОПИСАНИЯ
+  // (`description: 'Личный'`), то есть уровень доступа не хранился вовсе и
+  // «личный» отчёт возвращался всем участникам проекта. Пустая строка на
+  // проводе = 'project' (AS-IS-поведение старой сборки домена).
+  string visibility = 9;
+  // Declarative ReportSpec (FR-MREP-10) — только для custom; read на GET для edit UI.
+  string spec_json = 10;
+  // FR-REPORTS-190: модули-источники встроенного пресета (Contextual UI).
+  repeated string requires_modules = 11;
+}
+
+message ListReportsRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+  string query = 4;
+}
+message ListReportsResponse {
+  repeated Report list = 1;
+  int64 total = 2;
+}
+
+message GetReportRequest {
+  string project_id = 1;
+  string id = 2;
+}
+
+message CreateReportRequest {
+  string project_id = 1;
+  string name = 2;
+  string description = 3;
+  string kind = 4;
+  // TO-BE (FR-MREP-10): declarative ReportSpec serialized as JSON. Optional for v1.
+  string spec_json = 5;
+  // TODO-466: уровень доступа создаваемого отчёта (см. Report.visibility).
+  // Пустая строка = 'project' (значение по умолчанию — как было до правки).
+  string visibility = 6;
+}
+
+message UpdateReportRequest {
+  string project_id = 1;
+  string id = 2;
+  string name = 3;
+  string description = 4;
+  string spec_json = 5;
+  // TODO-466: смена уровня доступа. Пустая строка = «не менять» (у остальных
+  // полей этого запроса та же семантика: домен пишет только присланное).
+  string visibility = 6;
+}
+
+message DeleteReportRequest {
+  string project_id = 1;
+  string id = 2;
+}
+message DeleteReportResponse {
+  string id = 1;
+  bool deleted = 2;
+  int64 deleted_at = 3;
+}
+
+message RunReportRequest {
+  string project_id = 1;
+  string id = 2;
+  string params_json = 3;
+}
+
+// Typed projection of buildSummary() (P2.f). ADDITIVE to `data_json` (which is
+// kept byte-for-byte for existing clients) — a structured mirror so consumers no
+// longer have to JSON.parse the opaque blob to read totals/stage aggregates.
+message ReportTotals {
+  int64 deals_count = 1;
+  double deals_amount = 2;
+  int64 orders_count = 3;
+  int64 contacts_count = 4;
+  int64 companies_count = 5;
+}
+message ReportStageCount {
+  string stage_id = 1;
+  int64 count = 2;
+  double amount = 3;
+}
+message ReportSummary {
+  ReportTotals totals = 1;
+  repeated ReportStageCount deals_by_stage = 2;
+  repeated ReportStageCount orders_by_stage = 3;
+}
+
+message RunReportResponse {
+  string report_id = 1;
+  string report_name = 2;
+  string data_json = 3;
+  int64 generated_at = 4;
+  // Typed mirror of the aggregates in `data_json` (additive — never removes it).
+  ReportSummary summary = 5;
+  // Ключ пресета прогнанного отчёта (см. Report.preset_key) — фронт собирает срез
+  // по нему; дублируется в `data_json` для AS-IS-клиентов.
+  string preset_key = 6;
+}
+
+message ExportReportRequest {
+  string project_id = 1;
+  string id = 2;
+  string format = 3;
+  string params_json = 4;
+}
+message ExportReportResponse {
+  string report_id = 1;
+  string format = 2;
+  string file_name = 3;
+  string content_type = 4;
+  string payload_base64 = 5;
+  int64 generated_at = 6;
+}
+
+message DrillReportRequest {
+  string project_id = 1;
+  string id = 2;
+  string params_json = 3;
+  // dimension+value of the aggregate cell the user drilled into (FR-MREP-23).
+  string dimension = 4;
+  string value = 5;
+  int32 limit = 6;
+  string cursor = 7;
+}
+message DrillReportResponse {
+  // each item serialized as JSON object (id/name/amount/ownerId/stageId/...).
+  repeated string items_json = 1;
+  string next_cursor = 2;
+  bool has_more = 3;
+  int64 total = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Statistics dashboard (statistics-module · FR-MSTAT). statistics has no own
+// domain — its on-demand, visibility-aware aggregates live in the reports
+// service (TZ §1/§6). period is mandatory in the contract (FR-MSTAT-7);
+// custom requires from/to. Aggregation respects the viewer's VisibilityScope
+// (x-visibility-scope, fail-closed like RunReport) — FR-MSTAT-4.
+// ---------------------------------------------------------------------------
+
+message GetDashboardRequest {
+  string project_id = 1;
+  // 'today' | 'week' | 'month'(default) | 'quarter' | 'custom' (FR-MSTAT-7).
+  string period = 2;
+  // epoch ms, required only when period == 'custom'.
+  int64 from = 3;
+  int64 to = 4;
+}
+
+// MetricValue (TZ §5.5): one KPI cell, incl. period-over-period comparison
+// (TODO-478/TODO-504).
+message StatMetricValue {
+  string key = 1;
+  string label = 2;
+  double value = 3;
+  // Same metric over the PREVIOUS window of equal length. 0 means "there was no
+  // previous window" (fresh project / first period) — it is the ONLY signal the
+  // client has for that, so the UI must hide the growth indicator when this is 0.
+  double previous_value = 4;
+  // UNIT: fraction, NOT percent — (value - previous_value) / previous_value.
+  // 0.25 = +25%. Producer: reports.service.ts#kpiCell, which emits 0 when
+  // previous_value == 0; that zero is indistinguishable from "unchanged", hence
+  // the previous_value rule above (host: DashboardWidgets#hasComparableBase).
+  double growth_rate = 5;
+}
+
+// MetricBreakdown (TZ §5.5): one funnel stage / source bucket.
+message StatMetricBreakdown {
+  string key = 1;
+  string label = 2;
+  int64 count = 3;
+  double amount = 4;
+  // reserved for k-anonymity suppression (OQ-MSTAT-3, v2+); always false in v1.
+  bool suppressed = 5;
+}
+
+// ActivityRef (TZ §5.5): overdue/upcoming/recent list item.
+message StatActivityRef {
+  string id = 1;
+  string title = 2;
+  int64 due_at = 3;
+  string owner_id = 4;
+  // deep-link into the source module screen (FR-MSTAT-24); filled by gateway/FE.
+  string deep_link = 5;
+}
+
+// DealRef (TZ §5.5): stalled-deal list item (FR-MSTAT-30).
+message StatDealRef {
+  string id = 1;
+  string name = 2;
+  double amount = 3;
+  string owner_id = 4;
+  string stage_id = 5;
+  int64 stage_entered_at = 6;
+}
+
+// DashboardMetrics (TZ §5.5). period is echoed back; as_of = min over the
+// providers actually consulted (FR-MSTAT-14); partial=true if a provider was
+// unavailable (FR-MSTAT-15) — fail-soft, never fake.
+message GetDashboardResponse {
+  repeated StatMetricValue kpi = 1;
+  repeated StatMetricBreakdown funnel = 2;
+  repeated StatMetricBreakdown sources = 3;
+  repeated StatActivityRef overdue = 4;
+  repeated StatActivityRef upcoming = 5;
+  repeated StatActivityRef recent = 6;
+  repeated StatDealRef stalled = 7;
+  int64 as_of = 8;
+  bool partial = 9;
+  // reflected visibility level for the "viewing: …" UI hint (FR-MSTAT-26).
+  string scope_level = 10;
+  string period = 11;
+  int64 from = 12;
+  int64 to = 13;
+  // TODO-498: полный размер каждого среза ДО усечения лимитом (списки выше
+  // домен режет: overdue/upcoming/stalled ≤5, recent ≤10). Без этих счётчиков
+  // виджет не может показать «+ ещё N» — «длина массива − показано» у
+  // усечённого списка тождественно 0. 0 = «домен не посчитал» (fail-soft),
+  // gateway в этом случае оставляет длину усечённого списка.
+  int64 overdue_total = 14;
+  int64 upcoming_total = 15;
+  int64 recent_total = 16;
+  int64 stalled_total = 17;
+}
+
+// ---------------------------------------------------------------------------
+// Statistics analytics screen (`/statistics`, FR-MSTAT-16/17). GetMetrics is the
+// drill-deeper sibling of GetDashboard: detailed visibility-aware slices (sales
+// dynamics + avg check, funnel + conversion, sources + revenue, team breakdown
+// by manager). Same scope/period contract as GetDashboard (x-visibility-scope,
+// fail-closed; period mandatory, custom requires from/to). `slices` narrows the
+// requested set; empty = all available. Every slice is additionally gated by its
+// source module (`enabledModules`): order_types is served only with `orders` on,
+// the deals-sourced slices only with `deals` on.
+// ---------------------------------------------------------------------------
+
+message GetMetricsRequest {
+  string project_id = 1;
+  string period = 2;
+  int64 from = 3;
+  int64 to = 4;
+  // 'sales' | 'funnel' | 'sources' | 'team' | 'by_department' | 'order_types'.
+  // Empty → every available slice (gated by the project's enabled modules).
+  repeated string slices = 5;
+}
+
+// One time-bucketed point of a dynamics series (FR-MSTAT-17 sales slice).
+message StatSeriesPoint {
+  string bucket = 1; // 'YYYY-MM-DD'
+  int64 count = 2;
+  double amount = 3;
+}
+
+// Funnel stage with conversion to the next stage (FR-MSTAT-17 funnel slice).
+message StatFunnelStage {
+  string key = 1;
+  string label = 2;
+  int64 count = 3;
+  double amount = 4;
+  // share of the entry stage that reached this stage, 0..1 (cumulative conversion).
+  double conversion = 5;
+}
+
+// Per-manager breakdown row (FR-MSTAT-17 team slice; US-M3/S4 Must).
+message StatManagerRow {
+  string owner_id = 1;
+  int64 deals_count = 2;
+  double amount = 3;
+  // average deal amount for this manager in scope/period.
+  double avg_check = 4;
+  int64 activities_count = 5;
+  // FR-STAT-360: заполнено вместо owner_id, когда срез свёрнут в подразделения
+  // (наблюдателю видно больше N_OWNER владельцев). Смотреть на team_grouping.
+  string department_id = 6;
+}
+
+// Per-department breakdown row (FR-MSTAT-17/28 by_department slice). Grouped on
+// the deal's departmentId within the viewer's scope/period; reserved order-domain
+// rollup will enrich it (TODO §6.4). Mirrors StatManagerRow shape per department.
+message StatDepartmentRow {
+  string department_id = 1;
+  int64 deals_count = 2;
+  double amount = 3;
+  double avg_check = 4;
+  int64 managers_count = 5;
+}
+
+// Per-order-type breakdown row (FR-MSTAT-17 order_types slice; source domain:
+// orders, FR-STAT-280/290). An order carries no money field of its own — the sum
+// lives in the type's dynamic `fields_json` — so the slice is a pure count
+// distribution: no fabricated amount. `order_type_id` is kept as the drill key
+// (the FE list filters orders by typeId, not by caption); the display name is
+// resolved at the gateway, which alone sees the orders type dictionary — same
+// contract as owner_id/department_id above.
+message StatOrderTypeRow {
+  string order_type_id = 1;
+  int64 orders_count = 2;
+}
+
+message GetMetricsResponse {
+  // sales slice: dynamics over time + the period-level average check.
+  repeated StatSeriesPoint sales = 1;
+  double avg_check = 2;
+  // funnel slice: stages with conversion.
+  repeated StatFunnelStage funnel = 3;
+  // sources slice: distribution by source with revenue.
+  repeated StatMetricBreakdown sources = 4;
+  // team slice: per-manager breakdown (by_managers).
+  repeated StatManagerRow team = 5;
+  // FR-STAT-360: чем сгруппирован `team` — 'user' (по умолчанию) или 'department'
+  // (свёртка, когда наблюдателю видно больше N_OWNER владельцев). Поле 15 —
+  // дописано в хвост, чтобы 6..14 остались стабильными.
+  string team_grouping = 15;
+  // by_department slice: per-department breakdown (field 13 to keep 6..12 stable).
+  repeated StatDepartmentRow by_department = 13;
+  // order_types slice: orders per order type (field 14, appended for the same reason).
+  repeated StatOrderTypeRow order_types = 14;
+  // echoed period + provenance, same semantics as the dashboard.
+  int64 as_of = 6;
+  bool partial = 7;
+  string scope_level = 8;
+  string period = 9;
+  int64 from = 10;
+  int64 to = 11;
+  // the slices actually present in this response (after module gating).
+  repeated string slices = 12;
+  // FR-REPORTS-250: average dwell time per stage (closed transitions only).
+  // Поле 16 — не пересекается с team_grouping=15 (FR-STAT-360, W-6).
+  repeated StatStageDuration stage_durations = 16;
+}
+
+// FR-REPORTS-250: time-in-stage aggregate row.
+message StatStageDuration {
+  string stage_id = 1;
+  string label = 2;
+  int64 transition_count = 3;
+  double avg_duration_ms = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Deal stage history (FR-REPORTS-250 + §4 stage history UI).
+// ---------------------------------------------------------------------------
+
+message DealStageHistoryEntry {
+  string from_stage_id = 1;
+  string to_stage_id = 2;
+  int64 entered_at = 3;
+  int64 exited_at = 4;
+  string moved_by = 5;
+  string kind = 6;
+  int64 duration_ms = 7;
+  string label = 8;
+}
+
+message GetDealStageHistoryRequest {
+  string project_id = 1;
+  string deal_id = 2;
+}
+
+message GetDealStageHistoryResponse {
+  repeated DealStageHistoryEntry entries = 1;
+}
+
+service ReportsGrpc {
+  rpc ListReports(ListReportsRequest) returns (ListReportsResponse);
+  rpc GetReport(GetReportRequest) returns (Report);
+  rpc CreateReport(CreateReportRequest) returns (Report);
+  rpc UpdateReport(UpdateReportRequest) returns (Report);
+  rpc DeleteReport(DeleteReportRequest) returns (DeleteReportResponse);
+  rpc RunReport(RunReportRequest) returns (RunReportResponse);
+  rpc ExportReport(ExportReportRequest) returns (ExportReportResponse);
+  rpc DrillReport(DrillReportRequest) returns (DrillReportResponse);
+  // Statistics dashboard — on-demand, visibility-aware aggregate (FR-MSTAT).
+  rpc GetDashboard(GetDashboardRequest) returns (GetDashboardResponse);
+  // Statistics analytics — detailed visibility-aware slices (FR-MSTAT-16/17).
+  rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
+  // FR-REPORTS-250: merged stage timeline (embedded log + archived history).
+  rpc GetDealStageHistory(GetDealStageHistoryRequest) returns (GetDealStageHistoryResponse);
+}

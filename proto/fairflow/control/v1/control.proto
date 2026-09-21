@@ -1,0 +1,1575 @@
+syntax = "proto3";
+package fairflow.control.v1;
+
+import "google/protobuf/struct.proto";
+
+message ModuleConfig {
+  string module_id = 1;
+  bool enabled = 2;
+  google.protobuf.Struct personal_settings = 3;
+  google.protobuf.Struct integration_settings = 4;
+  repeated string integration_methods_enabled = 5;
+  // TODO-237: per-project module LIFECYCLE state, additive to enable/disable.
+  // Without these on the wire a PATCH of the project (which round-trips the
+  // whole module_configs list) silently erased the install fact and the active
+  // version that install/upgrade had written.
+  //
+  // proto3 cannot distinguish `installed:false` from "field absent" (both are
+  // omitted on the wire), so the WRITE semantics here are deliberately additive:
+  // `true` asserts the install fact, `false`/absent means "no opinion — keep
+  // what is stored". Un-installing is NOT expressible via UpdateProject; it has
+  // its own RPC (ModuleLifecycleControlGrpc.UninstallModule), which is the only
+  // caller allowed to clear the fact.
+  bool installed = 6;
+  // Active module version in this project (manifest semver). Empty = "no
+  // opinion — keep stored" (same additive rule as `installed`).
+  string version = 7;
+  // Runtime axis (§19e.5 / FR-PLATFORM-115): active | suspended.
+  string runtime_status = 8;
+  bool ever_suspended = 9;
+  string config_state = 10; // ready | needs_config (FR-PLATFORM-230)
+}
+
+message ModulePolicyRule {
+  string id = 1;
+  string module_id = 2;
+  string effect = 3;    // allow | deny
+  string subject = 4;
+  string action = 5;
+  string resource = 6;
+  google.protobuf.Struct condition = 7;
+}
+
+message Project {
+  string id = 1;
+  string name = 2;
+  string color = 3;
+  string owner_type = 4;  // PERSONAL | ORGANIZATION
+  string owner_id = 5;
+  repeated string modules = 6;
+  repeated ModuleConfig module_configs = 7;
+  repeated ModulePolicyRule module_policies = 8;
+  repeated string effective_modules = 9;
+  // Phase 4d: per-project record-visibility config { projectRole: visibilityLevel }.
+  map<string, string> visibility_config = 10;
+  // C5: lifecycle state — active | archived | pending_deletion.
+  string status = 11;
+  // C5: RFC3339 instant after which a pending_deletion project may be purged (empty otherwise).
+  string deletion_scheduled_at = 12;
+  // FR-PSET-330 / FR-ONB-23: onboarding template used at project creation.
+  string template_id = 13;
+  // FR-PROJ-095: template provisioning observability — pending | complete | failed.
+  string provisioning_status = 14;
+}
+
+message GetProjectRequest { string id = 1; }
+
+message UpdateProjectRequest {
+  string id = 1;
+  string name = 2;
+  repeated string modules = 3;
+  repeated ModuleConfig module_configs = 4;
+  repeated ModulePolicyRule module_policies = 5;
+  map<string, string> visibility_config = 6;
+  // BX-MODEL-6: opaque access-preset key when this update originates from the
+  // "Apply preset" flow; drives the `preset.applied` audit fact (§7.3).
+  string applied_preset = 7;
+  // FR-PSET-055: when true, disabling a module also disables enabled dependents
+  // (explicit cascade — no silent multi-toggle).
+  bool cascade = 8;
+}
+
+// FR-PSET-055 / FR-MPRJ-11: preview before disabling a project module.
+message ModuleDisableImpactDependent {
+  string id = 1;
+  string name = 2;
+}
+
+message ModuleDisableImpactStoppedAutomation {
+  string id = 1;
+  string name = 2;
+}
+
+message GetModuleDisableImpactRequest {
+  string project_id = 1;
+  string module_id = 2;
+}
+
+message GetModuleDisableImpactResponse {
+  repeated ModuleDisableImpactDependent dependent_enabled_modules = 1;
+  // -1 = domain unavailable / no unfinished concept (FR-MPRJ-11).
+  int64 unfinished_records = 2;
+  repeated ModuleDisableImpactStoppedAutomation stopped_automations = 3;
+  // FR-SHELL-160: outbound webhooks + DLQ stay paused after automation re-enable.
+  bool webhook_dlq_suspended = 4;
+}
+message ListProjectsByOwnerRequest {
+  string owner_type = 1;
+  string owner_id = 2;
+}
+message ListMyProjectsRequest { string user_id = 1; }
+message ListProjectsResponse { repeated Project list = 1; }
+
+// FR-PROFILE-280: self-view of project memberships + visibility (no permission list).
+message MyAccessProjectEntry {
+  string project_id = 1;
+  string project_name = 2;
+  string role = 3;
+  string visibility_level = 4;
+  string joined_at = 5;
+}
+message GetMyAccessRequest {}
+message GetMyAccessResponse {
+  repeated string system_roles = 1;
+  repeated MyAccessProjectEntry projects = 2;
+}
+
+message CreateProjectRequest {
+  string owner_type = 1;
+  string owner_id = 2;
+  string name = 3;
+  string template_id = 4;
+  repeated string modules = 5;
+  string created_by_user_id = 6;
+  repeated ModuleConfig module_configs = 7;
+  repeated ModulePolicyRule module_policies = 8;
+  // Наполнить проект демонстрационными данными после создания (по включённым
+  // модулям). Демо-данные, без чувствительной информации. Best-effort.
+  bool seed_demo_data = 9;
+}
+
+// FR-ORG-007: box bootstrap gate — does the singleton SystemSettings row exist?
+message HasSystemRequest {}
+message HasSystemResponse { bool exists = 1; }
+
+message CreateOrganizationRequest {
+  string name = 1;
+  string slug = 2;
+  string user_id = 3;
+  string inn = 4;
+  string kpp = 5;
+  string ogrn = 6;
+  string legal_address = 7;
+  string actual_address = 8;
+  string phone = 9;
+  string email = 10;
+  string logo_url = 11;
+  string description = 12;
+}
+message Organization {
+  string id = 1;
+  string name = 2;
+  string slug = 3;
+  string role = 4;  // platform_owner | platform_admin | employee
+  string inn = 5;
+  string kpp = 6;
+  string ogrn = 7;
+  string legal_address = 8;
+  string actual_address = 9;
+  string phone = 10;
+  string email = 11;
+  string logo_url = 12;
+  string description = 13;
+}
+message GetOrganizationRequest {
+  string id = 1;
+  string user_id = 2;  // optional — to resolve the requester's role
+}
+message UpdateOrganizationRequest {
+  string id = 1;
+  string name = 2;
+  string inn = 3;
+  string kpp = 4;
+  string ogrn = 5;
+  string legal_address = 6;
+  string actual_address = 7;
+  string phone = 8;
+  string email = 9;
+  string logo_url = 10;
+  string description = 11;
+  string actor_user_id = 12;  // requester — must be owner/admin to update
+}
+message ListMyOrganizationsRequest { string user_id = 1; }
+message ListMyOrganizationsResponse { repeated Organization list = 1; }
+
+// ─── Org structure: employees + departments ──────────────────────────────
+message Employee {
+  string id = 1;
+  string organization_id = 2;
+  string user_id = 3;
+  string role = 4;            // platform_owner | platform_admin | employee
+  string department_id = 5;
+  string created_at = 6;
+  bool is_active = 7;         // FR-MORG-23/43: false = offboarded (seat freed)
+}
+message ListEmployeesRequest {
+  string organization_id = 1;
+  string actor_user_id = 2;
+}
+message ListEmployeesResponse { repeated Employee list = 1; }
+
+// FR-ORG-150: colleague directory without HR-PII (no email/phone/role internals).
+message ColleagueDirectoryEntry {
+  string user_id = 1;
+  string department_id = 2;
+  string department_name = 3;
+  string manager_user_id = 4;
+}
+message ListColleagueDirectoryRequest {
+  string organization_id = 1;
+  string actor_user_id = 2;
+}
+message ListColleagueDirectoryResponse { repeated ColleagueDirectoryEntry list = 1; }
+message AddEmployeeRequest {
+  string organization_id = 1;
+  string user_id = 2;
+  string role = 3;
+  string department_id = 4;
+  string actor_user_id = 5;
+}
+message UpdateEmployeeRequest {
+  string organization_id = 1;
+  string user_id = 2;
+  string role = 3;
+  string department_id = 4;
+  string actor_user_id = 5;
+}
+message RemoveEmployeeRequest {
+  string organization_id = 1;
+  string user_id = 2;
+  string actor_user_id = 3;
+}
+// FR-MORG-43 / OQ-MORG-5: offboard (deactivate) and reactivate an employee.
+message SetEmployeeActiveRequest {
+  string organization_id = 1;
+  string user_id = 2;
+  string actor_user_id = 3;
+  // BX-OFFB-2: on offboard (deactivate), the active member the leaver's CRM
+  // records are reassigned to. Empty → control defaults to the acting admin.
+  // Ignored by ReactivateEmployee.
+  string reassign_to_user_id = 4;
+}
+// Transfer organization ownership: the current platform_owner hands off to an
+// active member. Atomic in control (old owner → platform_admin, target →
+// platform_owner in one tx). actor_user_id must be the current owner.
+message TransferOwnershipRequest {
+  string organization_id = 1;
+  string new_owner_user_id = 2;
+  string actor_user_id = 3;
+}
+// FR-MORG-22: seats / licenses snapshot for the organization.
+message GetOrgSeatsRequest {
+  string organization_id = 1;
+  string actor_user_id = 2;
+}
+message GetOrgSeatsResponse {
+  int32 used = 1;
+  int32 total = 2;
+  bool over_limit = 3;
+  string plan = 4;
+}
+// P8-T3.1: caller's org membership/role lookup (gateway OrgAccessGuard).
+message GetOrgRoleRequest {
+  string organization_id = 1;
+  string user_id = 2;         // the caller (gateway-verified x-user-id)
+}
+message GetOrgRoleResponse {
+  string role = 1;            // platform_owner | platform_admin | employee | "" (not a member)
+  bool is_member = 2;         // false when the user has no Employee row in the org
+  bool is_active = 3;         // false when offboarded (FR-MORG-23/43)
+}
+// P8-T4.3: org-structure permission projection for the FE (mirror of the project
+// `GET /projects/:id/me/permissions`). Thin read over OrgPdpService.resolveOrgEffective.
+message GetOrgPermissionProjectionRequest {
+  string organization_id = 1;
+  string user_id = 2;         // the caller (gateway-verified x-user-id)
+}
+message GetOrgPermissionProjectionResponse {
+  repeated string allowed = 1;  // effective org-structure allow-set (org:* keys)
+  string org_role = 2;          // platform_owner | platform_admin | employee | "" (not a member)
+  bool is_member = 3;           // false when the user has no Employee row in the org
+}
+// FR-MORG-43: deactivate / reactivate the organization (soft, no hard-delete).
+message SetOrgActiveRequest {
+  string organization_id = 1;
+  string actor_user_id = 2;
+}
+// FR-MORG-21/-13: dry-run preview of a department reorganization.
+message PreviewReorgRequest {
+  string organization_id = 1;
+  string department_id = 2;
+  string target_parent_id = 3;  // empty = move to root
+  string actor_user_id = 4;
+}
+message PreviewReorgResponse {
+  string organization_id = 1;
+  string department_id = 2;
+  string department_name = 3;
+  string current_parent_id = 4;
+  string target_parent_id = 5;
+  int32 affected_department_count = 6;
+  repeated string affected_department_ids = 7;
+  int32 affected_employee_count = 8;
+  bool valid = 9;
+  repeated string issues = 10;  // TARGET_NOT_IN_ORG | WOULD_CREATE_CYCLE
+}
+
+// P8-T6.2: the caller's own org membership (self-scoped, read-only).
+message GetMyMembershipRequest {
+  string organization_id = 1;
+  string user_id = 2;           // the caller (gateway-verified x-user-id)
+}
+message MembershipProject {
+  string project_id = 1;
+  string project_name = 2;
+}
+message GetMyMembershipResponse {
+  bool is_member = 1;           // false when the caller has no Employee row
+  string user_id = 2;
+  string role = 3;              // platform_owner | platform_admin | employee
+  bool is_active = 4;           // false when offboarded (FR-MORG-30)
+  string department_id = 5;
+  string department_name = 6;
+  string leader_user_id = 7;    // department leader (name resolved at gateway)
+  repeated MembershipProject projects = 8;  // org-owned projects the caller is a member of
+}
+
+// P8-T6.2: dry-run preview of an employee offboard (org-owned scope only).
+message PreviewOffboardRequest {
+  string organization_id = 1;
+  string user_id = 2;           // the employee being previewed for offboard
+  string actor_user_id = 3;     // the manager requesting the preview
+}
+message OffboardProject {
+  string project_id = 1;
+  string project_name = 2;
+}
+message PreviewOffboardResponse {
+  string user_id = 1;
+  bool is_owner = 2;            // owners cannot be offboarded (cannot_remove_owner)
+  repeated OffboardProject projects = 3;  // org-owned projects the user loses access to
+  // NOTE: per-project record reassignment counts are NOT computed here — those live
+  // in the Mongo CRM domains and are out of this preview's scope (partial=true marks it).
+  bool partial = 4;
+}
+
+message Department {
+  string id = 1;
+  string organization_id = 2;
+  string name = 3;
+  string parent_id = 4;
+  string created_at = 5;
+  string leader_user_id = 6;
+}
+message ListDepartmentsRequest {
+  string organization_id = 1;
+  string actor_user_id = 2;
+}
+message ListDepartmentsResponse { repeated Department list = 1; }
+message CreateDepartmentRequest {
+  string organization_id = 1;
+  string name = 2;
+  string parent_id = 3;
+  string actor_user_id = 4;
+  string leader_user_id = 5;
+}
+message UpdateDepartmentRequest {
+  string id = 1;
+  string name = 2;
+  string parent_id = 3;
+  string actor_user_id = 4;
+  string leader_user_id = 5;
+}
+message DeleteDepartmentRequest {
+  string id = 1;
+  string actor_user_id = 2;
+  // forbid (default) — reject when children or active employees remain;
+  // reparent — move child departments to the deleted node's parent before delete.
+  string strategy = 3;
+}
+message OkResponse { bool ok = 1; }
+
+// ─── Department→project bindings (FR-MORG-7/8/9/10/11) ─────────────────────
+message DepartmentBinding {
+  string id = 1;
+  string organization_id = 2;
+  string department_id = 3;
+  string project_id = 4;
+  string project_name = 5;   // resolved in control (same DB) — dep. participation
+  string default_role = 6;   // PROJECT role (FR-MORG-2)
+  string scope = 7;          // "self" (v1)
+  string status = 8;         // "active" | "suspended"
+  string created_by = 9;
+  string created_at = 10;
+  string updated_at = 11;
+}
+message ListDepartmentBindingsRequest {
+  string organization_id = 1;
+  string department_id = 2;
+  string actor_user_id = 3;
+}
+message ListDepartmentBindingsResponse { repeated DepartmentBinding list = 1; }
+message CreateDepartmentBindingRequest {
+  string organization_id = 1;
+  string department_id = 2;
+  string project_id = 3;
+  string default_role = 4;
+  string scope = 5;
+  string actor_user_id = 6;
+}
+message UpdateDepartmentBindingRequest {
+  string organization_id = 1;
+  string department_id = 2;
+  string id = 3;
+  // Optional patch fields (empty string = unset → not changed). status uses the
+  // domain wire value ("active" | "suspended").
+  string default_role = 4;
+  string scope = 5;
+  string status = 6;
+  string actor_user_id = 7;
+}
+message DeleteDepartmentBindingRequest {
+  string organization_id = 1;
+  string department_id = 2;
+  string id = 3;
+  string actor_user_id = 4;
+}
+
+// ─── Org invitations ──────────────────────────────────────────────────────
+// A project membership an invitation grants on accept (FR-ONB-10 / FR-AUTH-7).
+// `role` is a PROJECT role (owner|admin|manager|member|viewer), NOT an org role.
+message ProjectGrant {
+  string project_id = 1;
+  string role = 2;
+}
+message Invitation {
+  string id = 1;
+  string organization_id = 2;
+  string email = 3;
+  string role = 4;
+  string department_id = 5;
+  string status = 6;             // pending | accepted | revoked
+  string invited_by_user_id = 7;
+  string accepted_user_id = 8;
+  string created_at = 9;
+  string expires_at = 10;
+  string token = 11;             // only returned to the gateway (for the email link)
+  repeated ProjectGrant project_grants = 12; // onboarding step 4 (FR-ONB-10)
+}
+message CreateInvitationRequest {
+  string organization_id = 1;
+  string email = 2;
+  string role = 3;
+  string department_id = 4;
+  string invited_by_user_id = 5;
+  string actor_user_id = 6;
+  repeated ProjectGrant project_grants = 7; // onboarding step 4 (FR-ONB-10)
+}
+message ListInvitationsRequest {
+  string organization_id = 1;
+  string actor_user_id = 2;
+}
+message ListInvitationsResponse { repeated Invitation list = 1; }
+message RevokeInvitationRequest {
+  string id = 1;
+  string actor_user_id = 2;
+}
+message ResendInvitationRequest {
+  string id = 1;
+  string actor_user_id = 2;
+}
+message GetInvitationRequest { string token = 1; }
+message InvitationDetails {
+  string id = 1;
+  string organization_id = 2;
+  string organization_name = 3;
+  string email = 4;
+  string role = 5;
+  string status = 6;
+  bool expired = 7;
+  string expires_at = 8;
+  repeated ProjectGrant project_grants = 9; // project access this invite grants
+}
+message AcceptInvitationRequest {
+  string token = 1;
+  string user_id = 2;            // resolved by the gateway (auth.ProvisionUser)
+}
+message AcceptInvitationResponse {
+  string organization_id = 1;
+  string user_id = 2;
+  // projects the accepter just became a member of (FR-ONB-10) — the gateway
+  // lands the user on the first one (/p/<projectId>) instead of the §4.5 stub.
+  repeated ProjectGrant project_grants = 3;
+}
+
+// ─── Org audit log ────────────────────────────────────────────────────────
+message OrgAuditEntry {
+  string id = 1;
+  string organization_id = 2;
+  string actor_user_id = 3;
+  string action = 4;
+  string entity_type = 5;
+  string entity_id = 6;
+  string metadata_json = 7;
+  string created_at = 8;
+}
+message ListOrgAuditRequest {
+  string organization_id = 1;
+  string actor_user_id = 2;
+  int32 limit = 3;
+  // Cursor-based pagination (NFR-ORG-080 / FR-ORG-590): opaque token from a prior
+  // response's `next_cursor` (createdAt|id, newest-first).
+  string cursor = 4;
+  string filter_entity_type = 5;
+  string filter_actor_user_id = 6;
+  // ISO-8601 inclusive bounds on `created_at`.
+  string from_ts = 7;
+  string to_ts = 8;
+}
+message ListOrgAuditResponse {
+  repeated OrgAuditEntry list = 1;
+  string next_cursor = 2;
+}
+
+// FR-ORG-030 / FR-MORG-14: presigned PUT for org logo (≤5 MiB, TTL 5 min).
+message CreateLogoUploadUrlRequest {
+  string organization_id = 1;
+  string actor_user_id = 2;
+  string content_type = 3;
+  string file_name = 4;
+  int64 content_length = 5;
+}
+message CreateLogoUploadUrlResponse {
+  string upload_url = 1;
+  string logo_url = 2;
+  string object_key = 3;
+  int64 expires_at = 4;
+}
+
+// FR-ORG-220 / FR-MORG-42: per-department aggregates (org data; optional project
+// scope for CRM-side unassigned count enrichment at the gateway).
+message GetDepartmentSummaryRequest {
+  string organization_id = 1;
+  string department_id = 2;
+  string actor_user_id = 3;
+  string project_id = 4;
+}
+message GetDepartmentSummaryResponse {
+  int32 employee_count = 1;
+  int32 active_seats = 2;
+  int32 pending_invitations = 3;
+  int32 unassigned_records_count = 4;
+}
+
+message Member {
+  string id = 1;
+  string name = 2;
+  string email = 3;
+  string role = 4;
+}
+message ListMembersRequest { string project_id = 1; }
+message ListMembersResponse { repeated Member list = 1; }
+
+// WM5: project membership mutations (FR-MPRJ-1). All scoped by project_id.
+message AddMemberRequest {
+  string project_id = 1;
+  string user_id = 2;
+  string role = 3;            // owner|admin|manager|member|viewer (default member)
+  string actor_user_id = 4;
+}
+message UpdateMemberRoleRequest {
+  string project_id = 1;
+  string user_id = 2;
+  string role = 3;
+  string actor_user_id = 4;
+}
+message RemoveMemberRequest {
+  string project_id = 1;
+  string user_id = 2;
+  string actor_user_id = 3;
+  // FR-PROJ-215: when set, reassign owned CRM records before membership removal.
+  string reassign_to_user_id = 4;
+}
+message PreviewRemoveMemberRequest {
+  string project_id = 1;
+  string user_id = 2;
+  string actor_user_id = 3;
+}
+message PreviewRemoveMemberResponse {
+  int32 owned_count = 1;
+  repeated OwnedRecordBreakdown breakdown = 2;
+}
+message OwnedRecordBreakdown {
+  string domain = 1;
+  int32 count = 2;
+}
+
+// FR-PROJ-250: project-scoped email invitation.
+message ProjectInvitationMsg {
+  string id = 1;
+  string project_id = 2;
+  string project_name = 3;
+  string email = 4;
+  string role = 5;
+  string status = 6;
+  string token = 7; // plaintext accept token — only on create/resend
+  bool expired = 8;
+  string expires_at = 9;
+}
+message CreateProjectInvitationRequest {
+  string project_id = 1;
+  string email = 2;
+  string role = 3;
+  string invited_by_user_id = 4;
+  string actor_user_id = 5;
+}
+message GetProjectInvitationRequest { string token = 1; }
+message AcceptProjectInvitationRequest {
+  string token = 1;
+  string user_id = 2;
+}
+message AcceptProjectInvitationResponse {
+  string project_id = 1;
+  string project_name = 2;
+  string role = 3;
+}
+// TODO-449: atomic patch of one module's personalSettings without a full-project
+// RMW (common-bff `putModuleSettings` used to getProject→mutate→updateProject
+// and concurrent tab saves could clobber each other's module_configs).
+message SetModulePersonalSettingsRequest {
+  string project_id = 1;
+  string module_id = 2;
+  google.protobuf.Struct personal_settings = 3;
+  string actor_user_id = 4;
+}
+message SetModulePersonalSettingsResponse {
+  google.protobuf.Struct personal_settings = 1;
+}
+// Paired read: gateway module-settings GET routes must not read personalSettings
+// out of the full Project payload — mapProject emits them as plain JSON maps,
+// which the Struct serializer silently drops (5th recurrence of the
+// GAP-PRODUCTS-160 loader landmine). This RPC returns the value properly
+// Struct-encoded end to end.
+message GetModulePersonalSettingsRequest {
+  string project_id = 1;
+  string module_id = 2;
+}
+// FR-PRODUCTS-050: paired read for project-level module integrationSettings
+// (e.g. products.defaultCurrency). Same Struct wire contract as personalSettings.
+message GetModuleIntegrationSettingsRequest {
+  string project_id = 1;
+  string module_id = 2;
+}
+message GetModuleIntegrationSettingsResponse {
+  google.protobuf.Struct integration_settings = 1;
+}
+message ProjectMember {
+  string id = 1;
+  string project_id = 2;
+  string user_id = 3;
+  string role = 4;
+  string created_at = 5;
+}
+// WM5: archive / unarchive a project (US-MPRJ-17).
+message ArchiveProjectRequest {
+  string id = 1;
+  bool archived = 2;          // true = archive, false = unarchive
+  string actor_user_id = 3;
+}
+// C5 (FR-MPRJ-17): project lifecycle transitions on top of archive.
+message RequestProjectDeletionRequest {
+  string id = 1;
+  string actor_user_id = 2;
+  // FR-PROJ-170: must match the project name exactly (validated by control when
+  // non-empty; the gateway requires it on the public route).
+  string confirm_name = 3;
+}
+message RestoreProjectRequest {
+  string id = 1;
+  string actor_user_id = 2;
+}
+// C5 (FR-ONB-5/7): (re)apply an onboarding template to an existing project.
+message ApplyTemplateRequest {
+  string project_id = 1;
+  string template_id = 2;
+  string actor_user_id = 3;
+}
+
+message CheckAccessRequest {
+  string project_id = 1;
+  string user_id = 2;
+}
+message CheckAccessResponse {
+  bool allowed = 1;
+  string role = 2;
+}
+
+// Phase 4d: resolve a user's record-visibility scope for a project. The gateway
+// calls this and propagates the result to CRM domains as x-visibility-scope.
+message ResolveRecordVisibilityRequest {
+  string project_id = 1;
+  string user_id = 2;
+  string resource = 3;          // contacts|companies|deals|orders|activities (for shares)
+  // [#19] Force full (non-deferred) inline lists regardless of size. ONLY for
+  // domain-side hydration: the domain resolves an oversized (deferred) scope by
+  // re-asking control with inline=true — the response may be large (up to the
+  // grpc-js message limit) and is NOT pushed back through the metadata budget.
+  // The gateway path leaves this false so oversized scopes defer as before.
+  bool inline = 4;
+}
+message ResolveRecordVisibilityResponse {
+  bool allowed = 1;
+  string role = 2;
+  string level = 3;                       // VisibilityLevel
+  string mode = 4;                       // all | restricted
+  repeated string owner_ids = 5;          // owner user ids visible (restricted)
+  repeated string shared_record_ids = 6;  // record ids of `resource` shared with the viewer
+  int64 epoch = 7;                         // K3: access epoch this decision was resolved at
+  // [#19] Compact descriptor for oversized scopes. When the expanded ownerIds[]
+  // (+ shared_record_ids) would exceed the metadata budget, control leaves the
+  // repeated lists EMPTY, sets deferred=true and returns the compact descriptor
+  // below instead. The domain then resolves the flat lists itself (server-side),
+  // keyed by (project_id, user_id, resource, epoch). deferred=false → the flat
+  // lists above are authoritative (unchanged behaviour for normal orgs).
+  bool deferred = 8;                       // true → resolve descriptor server-side in the domain
+  VisibilityScopeDescriptor descriptor = 9;
+  // Viewer direct unit ids — for department-owned records (deals `departmentId`).
+  repeated string viewer_unit_ids = 10;
+  // FR-CONTACTS-285: units/departments the viewer belongs to (always small, never deferred).
+  repeated string viewer_department_ids = 11;
+  // FR-COMPANIES-355: policy-scoped department-owned records visible when departmentId ∈ this list.
+  repeated string department_ids = 12;
+}
+
+// [#19] Compact, size-bounded description of a restricted scope. Carries the
+// SEED inputs (viewer's units + rule kinds + sharing flag) instead of the fully
+// expanded ownerIds[], so the metadata stays small regardless of org size.
+message VisibilityScopeDescriptor {
+  repeated string unit_ids = 1;            // viewer's direct unit ids (composition seeds)
+  repeated string led_unit_ids = 2;        // units the viewer leads (own_subgroups roots='led')
+  repeated string selected_group_ids = 3;  // explicit groups (selected_groups rule)
+  repeated string rule_kinds = 4;          // own|own_groups|own_subgroups|selected_groups|all
+  bool uses_sharing = 5;                   // whether additive record-sharing applies
+  string org_id = 6;                       // org boundary for the domain resolver's scope guard
+}
+
+// Phase 4d: explicit record sharing (control owns the RecordShare table).
+message RecordShare {
+  string id = 1;
+  string project_id = 2;
+  string resource = 3;
+  string record_id = 4;
+  string grantee_type = 5;   // user | department | unit
+  string grantee_id = 6;
+  string created_by = 7;
+  string created_at = 8;
+  string expires_at = 9;     // E2-11: RFC3339; empty = permanent grant
+}
+message ShareRecordRequest {
+  string project_id = 1;
+  string resource = 2;
+  string record_id = 3;
+  string grantee_type = 4;
+  string grantee_id = 5;
+  string actor_user_id = 6;
+  string expires_at = 7;     // E2-11: optional RFC3339 expiry; empty = permanent
+  string record_owner_user_id = 8; // FR-ACCESS-400: owner snapshot resolved on gateway
+}
+message ListRecordSharesRequest {
+  string project_id = 1;
+  string resource = 2;
+  string record_id = 3;
+}
+message ListRecordSharesResponse { repeated RecordShare list = 1; }
+message UnshareRecordRequest {
+  string id = 1;
+  string actor_user_id = 2;
+  string project_id = 3; // isolation: delete is scoped to this project (x-project-id)
+}
+
+service ProjectGrpc {
+  rpc ListProjectsByOwner(ListProjectsByOwnerRequest) returns (ListProjectsResponse);
+  rpc ListMyProjects(ListMyProjectsRequest) returns (ListProjectsResponse);
+  rpc GetMyAccess(GetMyAccessRequest) returns (GetMyAccessResponse);
+  rpc CreateProject(CreateProjectRequest) returns (Project);
+  rpc GetProject(GetProjectRequest) returns (Project);
+  rpc UpdateProject(UpdateProjectRequest) returns (Project);
+  rpc GetModuleDisableImpact(GetModuleDisableImpactRequest) returns (GetModuleDisableImpactResponse);
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
+  // WM5: project membership mutations + archive (FR-MPRJ-1 / US-MPRJ-17).
+  rpc AddMember(AddMemberRequest) returns (ProjectMember);
+  rpc UpdateMemberRole(UpdateMemberRoleRequest) returns (ProjectMember);
+  rpc RemoveMember(RemoveMemberRequest) returns (OkResponse);
+  rpc PreviewRemoveMember(PreviewRemoveMemberRequest) returns (PreviewRemoveMemberResponse);
+  rpc CreateProjectInvitation(CreateProjectInvitationRequest) returns (ProjectInvitationMsg);
+  rpc GetProjectInvitation(GetProjectInvitationRequest) returns (ProjectInvitationMsg);
+  rpc AcceptProjectInvitation(AcceptProjectInvitationRequest) returns (AcceptProjectInvitationResponse);
+  rpc SetModulePersonalSettings(SetModulePersonalSettingsRequest) returns (SetModulePersonalSettingsResponse);
+  rpc GetModulePersonalSettings(GetModulePersonalSettingsRequest) returns (SetModulePersonalSettingsResponse);
+  rpc GetModuleIntegrationSettings(GetModuleIntegrationSettingsRequest) returns (GetModuleIntegrationSettingsResponse);
+  rpc ArchiveProject(ArchiveProjectRequest) returns (Project);
+  // C5 (FR-MPRJ-17 / FR-ONB-5): lifecycle transitions + template (re)apply.
+  rpc RequestProjectDeletion(RequestProjectDeletionRequest) returns (Project);
+  rpc RestoreProject(RestoreProjectRequest) returns (Project);
+  rpc ApplyTemplate(ApplyTemplateRequest) returns (Project);
+  rpc CheckAccess(CheckAccessRequest) returns (CheckAccessResponse);
+  rpc ResolveRecordVisibility(ResolveRecordVisibilityRequest) returns (ResolveRecordVisibilityResponse);
+  rpc ShareRecord(ShareRecordRequest) returns (RecordShare);
+  rpc ListRecordShares(ListRecordSharesRequest) returns (ListRecordSharesResponse);
+  rpc UnshareRecord(UnshareRecordRequest) returns (OkResponse);
+  // K3-invalidation (Д-4): current per-project access epoch. The gateway reads it
+  // cheaply to detect that its cached access decisions are stale (epoch bumped on
+  // any role/member/policy/visibility/share/grant change) → ~0 revocation lag.
+  rpc GetProjectAccessEpoch(GetProjectAccessEpochRequest) returns (GetProjectAccessEpochResponse);
+}
+
+message GetProjectAccessEpochRequest {
+  string project_id = 1;
+}
+message GetProjectAccessEpochResponse {
+  int64 epoch = 1; // monotonic; 0 = never mutated (stable baseline)
+}
+
+// ─── E2-01 RBAC: roles, assignments, grants, effective resolve, simulate.
+// Source: permission-rbac/TZ.md §6.3, RFC-1-actions.md. All project mutations
+// carry actor_user_id (PEP: no-self-escalation §7.5) and project_id (isolation).
+
+message RoleMsg {
+  string id = 1;
+  string scope_type = 2;     // system | organization | project
+  string scope_id = 3;
+  string key = 4;            // owner|admin|manager|member|viewer for system roles
+  string name = 5;
+  string kind = 6;           // system | custom
+  bool is_archived = 7;
+  repeated string permissions = 8; // subject:action keys
+  string created_at = 9;
+  string updated_at = 10;
+}
+
+message CatalogEntry {
+  string subject = 1;
+  repeated string actions = 2;
+  repeated string module_ids = 3;
+}
+message GetPermissionCatalogRequest { string project_id = 1; }
+message GetPermissionCatalogResponse {
+  repeated CatalogEntry entries = 1;
+  repeated string keys = 2;        // flat subject:action registry
+}
+
+message ListRolesRequest { string project_id = 1; }
+message ListRolesResponse { repeated RoleMsg list = 1; }
+
+message CreateRoleRequest {
+  string project_id = 1;
+  string actor_user_id = 2;
+  string name = 3;
+  repeated string permissions = 4; // subject:action keys
+}
+message CreateRoleResponse {
+  RoleMsg role = 1;
+  repeated string warnings = 2;    // soft linter warnings (FR-PERM-11)
+}
+
+message UpdateRoleRequest {
+  string project_id = 1;
+  string actor_user_id = 2;
+  string role_id = 3;
+  string name = 4;                 // optional
+  repeated string permissions = 5; // optional; absent => unchanged
+  bool set_permissions = 6;        // true => apply permissions[] (allows clearing)
+}
+
+message DeleteRoleRequest {
+  string project_id = 1;
+  string actor_user_id = 2;
+  string role_id = 3;
+}
+
+message CloneRoleRequest {
+  string project_id = 1;
+  string actor_user_id = 2;
+  string role_id = 3;
+  string name = 4;
+}
+
+message RoleAssignmentMsg {
+  string id = 1;
+  string project_id = 2;
+  string subject_type = 3;   // user | department | unit
+  string subject_id = 4;
+  string role_id = 5;
+  string role_name = 6;
+  string role_key = 7;
+  string scope = 8;          // project | module:<id>
+  string expires_at = 9;
+  string created_by = 10;
+  string created_at = 11;
+}
+
+message ListRoleAssignmentsRequest {
+  string project_id = 1;
+  string subject_id = 2;     // optional filter
+  string subject_type = 3;   // optional filter
+}
+message ListRoleAssignmentsResponse { repeated RoleAssignmentMsg list = 1; }
+
+message GrantRoleRequest {
+  string project_id = 1;
+  string actor_user_id = 2;
+  string subject_type = 3;   // user | department | unit
+  string subject_id = 4;
+  string role_id = 5;
+  string scope = 6;          // project | module:<id> (default project)
+  string expires_at = 7;     // RFC3339; empty = no expiry
+}
+
+message RevokeRoleRequest {
+  string project_id = 1;
+  string actor_user_id = 2;
+  string assignment_id = 3;
+}
+
+message ResolveEffectivePermissionsRequest {
+  string project_id = 1;
+  string user_id = 2;
+}
+message PermissionSourceEntry {
+  string key = 1;                  // subject:action
+  string source = 2;               // e.g. baseline:member, assignment:manager, grant:allow
+}
+message ResolveEffectivePermissionsResponse {
+  repeated string allow = 1;       // subject:action keys (deny already subtracted)
+  repeated string deny = 2;
+  string role = 3;                 // dominant project role (legacy compat)
+  repeated PermissionSourceEntry sources = 4; // FR-ACCESS-550: per-key provenance
+}
+
+message SimulateAccessRequest {
+  string project_id = 1;
+  string user_id = 2;
+  string subject = 3;
+  string action = 4;
+}
+message SimulateAccessResponse {
+  string decision = 1;             // allow | deny
+  string reason = 2;               // OK | NOT_IN_ANY_ROLE | DENIED_BY_GRANT | PERMISSION_MAPPING_MISSING
+  repeated string matched_keys = 3;
+  string role = 4;
+}
+
+// ─── TODO-027: PEP ↔ PDP. The enforcement-path permission check.
+//
+// Until now the gateway PEP knew exactly one rule — the flat role×action matrix
+// (`projectRoleCanKey`) — so custom roles, department/unit role assignments and
+// addressed `PermissionGrant{effect:'deny'}` never produced a 403: they existed
+// in the data and in the UI but not in enforcement. `CheckPermissions` is the
+// single decision call the gateway makes; control answers it through the SAME
+// `decideRbac(subject, action, effective, catalog)` that the simulator/explain
+// use, so «что показал симулятор» == «что вернул боевой роут».
+//
+// Batched (the PEP may know several required pairs) and epoch-stamped: the
+// gateway caches each verdict under the project's existing ProjectAccessEpoch
+// (K3-invalidation) — no new invalidation mechanism.
+message PermissionCheck {
+  string subject = 1;              // decorator subject, e.g. "deals"
+  string action = 2;               // decorator action,  e.g. "delete"
+}
+message PermissionDecision {
+  string subject = 1;              // echoed — the PEP matches verdicts by pair
+  string action = 2;
+  // "allow" | "deny". ANY other value (including the proto3 default "") MUST be
+  // read as deny by the caller — an empty/short response can never grant.
+  string decision = 3;
+  string reason = 4;               // OK | OWNER_ALL | NOT_IN_ANY_ROLE | DENIED_BY_GRANT | NO_CATALOG_KEY
+  repeated string matched_keys = 5;
+  // The pair has NO key in THIS project's permission catalog (module disabled,
+  // or the decorator has no catalog mapping yet), so the granular engine has no
+  // opinion to enforce: nothing can be granted or denied for a key that cannot
+  // be stored. The PEP then keeps its own (flat-matrix) verdict instead of
+  // 403-ing a live route. Deliberately the ONLY non-fail-closed path, and it is
+  // reachable only via an explicit successful control response — a transport
+  // error, a timeout or a missing decision is always deny (proto3 default here
+  // is `false` = "applicable", so a truncated response denies).
+  bool not_applicable = 6;
+}
+message CheckPermissionsRequest {
+  string project_id = 1;
+  string user_id = 2;
+  repeated PermissionCheck checks = 3;
+}
+message CheckPermissionsResponse {
+  repeated PermissionDecision decisions = 1;
+  string role = 2;                 // dominant project role the decision was made for
+  int64 epoch = 3;                 // ProjectAccessEpoch the decision was resolved at
+}
+
+// ─── K3fe-be (E2-09): PDP explain + permission projection on the production path.
+// One resolver, explain mode (FR-ABAC-19): rbac (decideRbac) → abac (evalGate) →
+// visibility (visibility-resolver) → sharing, each layer appends a trace step.
+
+message SimulateAccessExplainRequest {
+  string project_id = 1;
+  string user_id = 2;             // subject under simulation (defaults to caller on the BFF)
+  string subject = 3;             // canon subject (e.g. "deals"); resource alias accepted
+  string action = 4;              // canon action (read|create|update|delete|manage|...)
+  string resource = 5;            // CRM resource for visibility/sharing (contacts|deals|...)
+  string record_id = 6;           // optional: when present, abac gate + sharing are evaluated for it
+}
+message AccessTraceStep {
+  string layer = 1;               // rbac | abac | visibility | sharing
+  string effect = 2;              // allow | deny | narrow | pass | grant
+  string rule_id = 3;             // optional matched rule/role id
+  string reason = 4;
+  bool inactive = 5;              // layer was not consulted (e.g. no recordId for abac gate)
+}
+message SimulateAccessExplainResponse {
+  string decision = 1;            // allow | deny
+  string reason = 2;              // short machine reason of the deciding layer
+  repeated AccessTraceStep trace = 3;
+  string role = 4;                // dominant project role of the simulated user
+}
+
+// API-2 (ui-shell §5.1): PermissionProjection for the current (user, project).
+message ResolvePermissionProjectionRequest {
+  string project_id = 1;
+  string user_id = 2;
+}
+message ModulePolicyFlagSet {
+  string module_id = 1;
+  map<string, bool> flags = 2;    // flagKey → bool
+}
+message PermissionVisibilityScope {
+  string mode = 1;                // all | restricted
+  string level = 2;              // only_own|own_and_shared|own_and_subordinates|own_and_department|all
+  string self_id = 3;
+  repeated string department_ids = 4;
+}
+message ResolvePermissionProjectionResponse {
+  string project_id = 1;
+  repeated string allowed = 2;            // context-independent subject:action keys
+  repeated ModulePolicyFlagSet module_policy_flags = 3;
+  PermissionVisibilityScope visibility_scope = 4;
+  int64 epoch = 5;                        // K3-invalidation: epoch the projection was resolved at
+}
+
+// ─── BX-ACL-BE-4: PermissionGrant write-API (addressed allow/deny overlay).
+// A grant is a project-wide blanket in RBAC v1 (resource='*', condition unused);
+// the resolver matches by grantee only. grantee_type: role | member | department
+// (unit lands in BX-ACL-BE-5). All mutations carry actor_user_id (§7.5) + project.
+message PermissionGrantMsg {
+  string id = 1;
+  string project_id = 2;
+  string module_id = 3;
+  string effect = 4;         // allow | deny
+  string subject = 5;
+  string action = 6;
+  string resource = 7;       // "*" in v1 (blanket)
+  string grantee_type = 8;   // role | member | department | unit
+  string grantee_id = 9;
+  string created_by = 10;
+  string created_at = 11;
+}
+
+message ListPermissionGrantsRequest { string project_id = 1; }
+message ListPermissionGrantsResponse { repeated PermissionGrantMsg list = 1; }
+
+message UpsertPermissionGrantRequest {
+  string project_id = 1;
+  string actor_user_id = 2;
+  string effect = 3;         // allow | deny
+  string subject = 4;
+  string action = 5;
+  string grantee_type = 6;   // role | member | department
+  string grantee_id = 7;
+}
+
+message RevokePermissionGrantRequest {
+  string project_id = 1;
+  string actor_user_id = 2;
+  string grant_id = 3;
+}
+
+message RoleAuditEntry {
+  string id = 1;
+  string action = 2;
+  string entity_type = 3;
+  string entity_id = 4;
+  string summary = 5;
+  string actor_user_id = 6;
+  string created_at = 7;
+}
+message ListRoleAuditLogRequest {
+  string project_id = 1;
+  int32 limit = 2;
+  string cursor = 3;               // FR-ACCESS-610: ISO8601|id opaque cursor
+  string filter_actor_user_id = 4;
+  string filter_entity_type = 5;
+  string filter_entity_id = 6;
+  string from_ts = 7;              // RFC3339 inclusive lower bound
+  string to_ts = 8;                // RFC3339 inclusive upper bound
+}
+message ListRoleAuditLogResponse {
+  repeated RoleAuditEntry list = 1;
+  string next_cursor = 2;
+}
+
+service RoleGrpc {
+  rpc GetPermissionCatalog(GetPermissionCatalogRequest) returns (GetPermissionCatalogResponse);
+  rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
+  rpc CreateRole(CreateRoleRequest) returns (CreateRoleResponse);
+  rpc UpdateRole(UpdateRoleRequest) returns (CreateRoleResponse);
+  rpc DeleteRole(DeleteRoleRequest) returns (OkResponse);
+  rpc CloneRole(CloneRoleRequest) returns (RoleMsg);
+  rpc ListRoleAssignments(ListRoleAssignmentsRequest) returns (ListRoleAssignmentsResponse);
+  rpc GrantRole(GrantRoleRequest) returns (RoleAssignmentMsg);
+  rpc RevokeRole(RevokeRoleRequest) returns (OkResponse);
+  rpc ResolveEffectivePermissions(ResolveEffectivePermissionsRequest) returns (ResolveEffectivePermissionsResponse);
+  rpc SimulateAccess(SimulateAccessRequest) returns (SimulateAccessResponse);
+  // TODO-027: the enforcement-path decision the gateway PEP calls on every
+  // @RequirePermission route (batched, epoch-stamped, same decideRbac engine).
+  rpc CheckPermissions(CheckPermissionsRequest) returns (CheckPermissionsResponse);
+  // K3fe-be (E2-09): explain on the production path + projection (API-2).
+  rpc SimulateAccessExplain(SimulateAccessExplainRequest) returns (SimulateAccessExplainResponse);
+  rpc ResolvePermissionProjection(ResolvePermissionProjectionRequest) returns (ResolvePermissionProjectionResponse);
+  rpc ListRoleAuditLog(ListRoleAuditLogRequest) returns (ListRoleAuditLogResponse);
+  // BX-ACL-BE-4: PermissionGrant write-API (addressed allow/deny overlay).
+  rpc ListPermissionGrants(ListPermissionGrantsRequest) returns (ListPermissionGrantsResponse);
+  rpc UpsertPermissionGrant(UpsertPermissionGrantRequest) returns (PermissionGrantMsg);
+  rpc RevokePermissionGrant(RevokePermissionGrantRequest) returns (OkResponse);
+}
+
+service OrganizationGrpc {
+  rpc HasSystem(HasSystemRequest) returns (HasSystemResponse);
+  rpc CreateOrganization(CreateOrganizationRequest) returns (Organization);
+  rpc GetOrganization(GetOrganizationRequest) returns (Organization);
+  rpc UpdateOrganization(UpdateOrganizationRequest) returns (Organization);
+  rpc ListMyOrganizations(ListMyOrganizationsRequest) returns (ListMyOrganizationsResponse);
+
+  rpc ListEmployees(ListEmployeesRequest) returns (ListEmployeesResponse);
+  // FR-ORG-150: PII-safe colleague roster (structural fields only; identity enriched on gateway).
+  rpc ListColleagueDirectory(ListColleagueDirectoryRequest) returns (ListColleagueDirectoryResponse);
+  rpc AddEmployee(AddEmployeeRequest) returns (Employee);
+  rpc UpdateEmployee(UpdateEmployeeRequest) returns (Employee);
+  rpc RemoveEmployee(RemoveEmployeeRequest) returns (OkResponse);
+  // FR-MORG-43 / OQ-MORG-5: employee offboard lifecycle.
+  rpc DeactivateEmployee(SetEmployeeActiveRequest) returns (Employee);
+  rpc ReactivateEmployee(SetEmployeeActiveRequest) returns (Employee);
+  // Transfer ownership (owner-only, enforced fail-closed in control): returns
+  // the new owner's Employee row.
+  rpc TransferOwnership(TransferOwnershipRequest) returns (Employee);
+
+  // FR-MORG-22: seats / licenses.
+  rpc GetOrgSeats(GetOrgSeatsRequest) returns (GetOrgSeatsResponse);
+  // P8-T3.1 (defense-in-depth): thin membership/role lookup for the gateway
+  // OrgAccessGuard (PEP #1 for org routes). Returns the caller's Employee role
+  // (empty when NOT a member) WITHOUT throwing on non-membership, so the guard
+  // can cleanly distinguish deny (empty role) from a control outage (transport
+  // error → fail-closed 503). Read-only, single-row lookup, no side effects.
+  rpc GetOrgRole(GetOrgRoleRequest) returns (GetOrgRoleResponse);
+  // P8-T4.3: org-structure permission projection for the FE gating (mirror of the
+  // project permissions endpoint). Returns the caller's effective org-structure
+  // allow-set (org:* keys) from the PDP, plus their org role and membership.
+  // Read-only, fail-closed on non-membership (empty allow-set).
+  rpc GetOrgPermissionProjection(GetOrgPermissionProjectionRequest) returns (GetOrgPermissionProjectionResponse);
+  // FR-MORG-43: organization deactivate / reactivate (soft).
+  rpc DeactivateOrganization(SetOrgActiveRequest) returns (Organization);
+  rpc ReactivateOrganization(SetOrgActiveRequest) returns (Organization);
+  // FR-MORG-21/-13: reorg dry-run.
+  rpc PreviewReorg(PreviewReorgRequest) returns (PreviewReorgResponse);
+  // P8-T6.2 (FR-MORG-30/37): the caller's OWN membership snapshot (role,
+  // department + leader, org-owned projects, active flag). Read-only, self-scoped.
+  rpc GetMyMembership(GetMyMembershipRequest) returns (GetMyMembershipResponse);
+  // P8-T6.2 (FR-MORG-25): dry-run preview of an employee offboard — the org-owned
+  // projects the target loses access to + owner guard. Read-only, no cascade.
+  // Record-count reassignment is out of scope (lives in Mongo CRM domains).
+  rpc PreviewOffboard(PreviewOffboardRequest) returns (PreviewOffboardResponse);
+
+  rpc ListDepartments(ListDepartmentsRequest) returns (ListDepartmentsResponse);
+  rpc CreateDepartment(CreateDepartmentRequest) returns (Department);
+  rpc UpdateDepartment(UpdateDepartmentRequest) returns (Department);
+  rpc DeleteDepartment(DeleteDepartmentRequest) returns (OkResponse);
+
+  // FR-MORG-7/8/9/10/11: department→project bindings (auto-membership intent).
+  rpc ListDepartmentBindings(ListDepartmentBindingsRequest) returns (ListDepartmentBindingsResponse);
+  rpc CreateDepartmentBinding(CreateDepartmentBindingRequest) returns (DepartmentBinding);
+  rpc UpdateDepartmentBinding(UpdateDepartmentBindingRequest) returns (DepartmentBinding);
+  rpc DeleteDepartmentBinding(DeleteDepartmentBindingRequest) returns (OkResponse);
+
+  rpc CreateInvitation(CreateInvitationRequest) returns (Invitation);
+  rpc ListInvitations(ListInvitationsRequest) returns (ListInvitationsResponse);
+  rpc RevokeInvitation(RevokeInvitationRequest) returns (Invitation);
+  rpc ResendInvitation(ResendInvitationRequest) returns (Invitation);
+  rpc GetInvitation(GetInvitationRequest) returns (InvitationDetails);
+  rpc AcceptInvitation(AcceptInvitationRequest) returns (AcceptInvitationResponse);
+
+  rpc ListOrgAudit(ListOrgAuditRequest) returns (ListOrgAuditResponse);
+  rpc CreateLogoUploadUrl(CreateLogoUploadUrlRequest) returns (CreateLogoUploadUrlResponse);
+  rpc GetDepartmentSummary(GetDepartmentSummaryRequest) returns (GetDepartmentSummaryResponse);
+
+  // chat (M-CHAT-12, B-3): resolve whether all peers share the actor's
+  // communication boundary (org / individual workspace) before a DM/group is
+  // created or @mentions are delivered. Returns the resolved scope to stamp on
+  // the conversation and the subset of peers OUTSIDE the boundary (for cross-org
+  // deny / @mention filtering, FR-CHAT-50/30). Under service-API-key.
+  rpc ResolveCommunicationScope(ResolveCommunicationScopeRequest) returns (ResolveCommunicationScopeResponse);
+}
+
+// chat (M-CHAT-12, contracts/chat.md §8.1).
+message ResolveCommunicationScopeRequest {
+  string actor_user_id = 1;            // x-user-id
+  repeated string peer_user_ids = 2;   // DM/group members or resolvable mentionIds
+  string organization_id = 3;          // x-organization-id (corporate mode)
+  string workspace_id = 4;             // x-workspace-id (individual mode, M-CHAT-10)
+}
+message ResolveCommunicationScopeResponse {
+  bool allowed = 1;                    // all peers share the actor's boundary
+  string scope_kind = 2;               // org | workspace
+  string scope_id = 3;                 // resolved boundary (→ conversations.scope)
+  repeated string denied_user_ids = 4; // peers outside the boundary
+}
+
+// ─── E2-06 Access Unit / Group (RFC-ACCESS-GROUPS §7.3). ──────────────────────
+message AccessUnit {
+  string id = 1;
+  string scope_type = 2;       // ORGANIZATION | PROJECT
+  string scope_id = 3;         // organizationId | projectId
+  string name = 4;
+  string kind = 5;             // department | team | territory | custom
+  string parent_id = 6;
+  string leader_user_id = 7;
+  string archived_at = 8;      // empty when active
+  string created_at = 9;
+}
+message AccessUnitMember {
+  string id = 1;
+  string unit_id = 2;
+  string member_type = 3;      // user | group
+  string member_id = 4;
+  string added_by = 5;
+  string added_at = 6;
+}
+
+message ListAccessUnitsRequest {
+  string scope_type = 1;
+  string scope_id = 2;
+  string actor_user_id = 3;
+  bool include_archived = 4;
+}
+message ListAccessUnitsResponse { repeated AccessUnit list = 1; }
+
+message CreateAccessUnitRequest {
+  string scope_type = 1;
+  string scope_id = 2;
+  string name = 3;
+  string kind = 4;
+  string parent_id = 5;
+  string leader_user_id = 6;
+  string actor_user_id = 7;
+}
+message UpdateAccessUnitRequest {
+  string id = 1;
+  string name = 2;
+  string kind = 3;
+  string leader_user_id = 4;
+  string actor_user_id = 5;
+}
+message SetUnitParentRequest {
+  string id = 1;
+  string parent_id = 2;        // empty = detach
+  string actor_user_id = 3;
+}
+message ArchiveAccessUnitRequest {
+  string id = 1;
+  bool archived = 2;
+  string actor_user_id = 3;
+}
+
+message ListUnitMembersRequest {
+  string unit_id = 1;
+  string actor_user_id = 2;
+}
+message ListUnitMembersResponse { repeated AccessUnitMember list = 1; }
+
+message ListUnitsOfUserRequest {
+  string scope_type = 1;
+  string scope_id = 2;
+  string user_id = 3;
+  string actor_user_id = 4;
+}
+
+message AddUnitMemberRequest {
+  string unit_id = 1;
+  string member_type = 2;      // user | group
+  string member_id = 3;
+  string actor_user_id = 4;
+}
+message RemoveUnitMemberRequest {
+  string unit_id = 1;
+  string member_type = 2;
+  string member_id = 3;
+  string actor_user_id = 4;
+}
+
+// Preview the effective-member count of a unit's composition BEFORE persisting a
+// nested-group edge (§7.2). Pure computation — never mutates the graph.
+message PreviewUnitCompositionRequest {
+  string unit_id = 1;
+  string add_group_id = 2;   // опц.: кандидат-вложенная группа для предпросмотра
+  string actor_user_id = 3;
+}
+message PreviewUnitCompositionResponse {
+  int32 current_user_count = 1;
+  int32 projected_user_count = 2;   // == current, когда add_group_id пуст
+  int32 added_user_count = 3;       // projected - current
+  int32 cross_scope_dropped = 4;    // сколько member'ов отсеял cross-scope hard-stop
+}
+
+service AccessUnitGrpc {
+  rpc ListAccessUnits(ListAccessUnitsRequest) returns (ListAccessUnitsResponse);
+  rpc CreateAccessUnit(CreateAccessUnitRequest) returns (AccessUnit);
+  rpc UpdateAccessUnit(UpdateAccessUnitRequest) returns (AccessUnit);
+  rpc SetUnitParent(SetUnitParentRequest) returns (AccessUnit);
+  rpc ArchiveAccessUnit(ArchiveAccessUnitRequest) returns (AccessUnit);
+  rpc ListUnitMembers(ListUnitMembersRequest) returns (ListUnitMembersResponse);
+  rpc ListUnitsOfUser(ListUnitsOfUserRequest) returns (ListAccessUnitsResponse);
+  rpc AddUnitMember(AddUnitMemberRequest) returns (AccessUnitMember);
+  rpc RemoveUnitMember(RemoveUnitMemberRequest) returns (OkResponse);
+  rpc PreviewUnitComposition(PreviewUnitCompositionRequest) returns (PreviewUnitCompositionResponse);
+}
+
+// ─── Module lifecycle (R4-E1-05) — per-project install/upgrade/uninstall on top
+// of enable/disable. Source: module-lifecycle/TZ.md §6.4. ───────────────────
+
+message ModuleStateEntry {
+  string module_id = 1;
+  string state = 2;        // not_installed | installed | enabled | disabled
+  bool enabled = 3;
+  bool installed = 4;
+  bool locked = 5;
+  string kind = 6;         // system | business | partner
+  string version = 7;      // active version in project
+  string latest_version = 8; // manifest-declared version
+  bool upgrade_available = 9;
+  string runtime_status = 10; // active | suspended
+  bool ever_suspended = 11;
+  string config_state = 12;   // ready | needs_config
+}
+
+message ListModuleStatesRequest { string project_id = 1; }
+message ListModuleStatesResponse { repeated ModuleStateEntry list = 1; }
+
+message InstallModuleRequest {
+  string project_id = 1;
+  string module_id = 2;
+  string actor_user_id = 3;
+  string idempotency_key = 4;
+}
+
+message UninstallModuleRequest {
+  string project_id = 1;
+  string module_id = 2;
+  string actor_user_id = 3;
+  string idempotency_key = 4;
+}
+
+message EnableModuleRequest {
+  string project_id = 1;
+  string module_id = 2;
+  string actor_user_id = 3;
+  string idempotency_key = 4;
+}
+
+message DisableModuleRequest {
+  string project_id = 1;
+  string module_id = 2;
+  bool cascade = 3;
+  string actor_user_id = 4;
+  string idempotency_key = 5;
+}
+
+message UpgradeModuleRequest {
+  string project_id = 1;
+  string module_id = 2;
+  string to_version = 3;
+  bool confirm_major = 4;
+  string actor_user_id = 5;
+  string idempotency_key = 6;
+}
+
+message ResumeModuleDeliveryRequest {
+  string project_id = 1;
+  string module_id = 2;
+  string actor_user_id = 3;
+  string idempotency_key = 4;
+  string dlq = 5; // discard | deliver
+}
+
+message UpgradeModulePreviewRequest {
+  string project_id = 1;
+  string module_id = 2;
+  string to_version = 3;
+}
+
+message MigrationStep {
+  int32 from_major = 1;
+  int32 to_major = 2;
+  string script_ref = 3;
+  bool reversible = 4;
+}
+
+message UpgradeModulePreviewResponse {
+  string module_id = 1;
+  string from_version = 2;
+  string to_version = 3;
+  string upgrade_class = 4;     // patch | minor | major | none
+  bool requires_confirmation = 5;
+  bool migration_required = 6;
+  repeated MigrationStep migrations = 7;
+}
+
+service ModuleLifecycleControlGrpc {
+  rpc ListModuleStates(ListModuleStatesRequest) returns (ListModuleStatesResponse);
+  rpc InstallModule(InstallModuleRequest) returns (ModuleStateEntry);
+  rpc UninstallModule(UninstallModuleRequest) returns (ModuleStateEntry);
+  rpc EnableModule(EnableModuleRequest) returns (ModuleStateEntry);
+  rpc DisableModule(DisableModuleRequest) returns (ModuleStateEntry);
+  rpc UpgradeModulePreview(UpgradeModulePreviewRequest) returns (UpgradeModulePreviewResponse);
+  rpc UpgradeModule(UpgradeModuleRequest) returns (ModuleStateEntry);
+  rpc ResumeModuleDelivery(ResumeModuleDeliveryRequest) returns (ModuleStateEntry);
+}
+
+// ─── F3-integ-be (U8/U4): project integrations + per-project API keys ────────
+// Minimal v1 config contour. All project-scoped (isolation by project_id) and
+// mutations carry actor_user_id (PEP: project `manage`). Secrets never leak in
+// list/get — integration secret is masked; the API key plaintext is returned
+// exactly once on creation, lists carry only a masked prefix.
+
+message Integration {
+  string id = 1;
+  string project_id = 2;
+  string name = 3;
+  string type = 4;                       // REST | KAFKA | DB
+  google.protobuf.Struct config = 5;     // non-secret connection config
+  bool secret_set = 6;                   // a secret is stored (never the value)
+  string secret_masked = 7;              // masked placeholder (e.g. "••••••••")
+  string status = 8;                     // active | disabled
+  string created_by = 9;
+  string created_at = 10;
+  string updated_at = 11;
+}
+
+message ListIntegrationsRequest { string project_id = 1; }
+message ListIntegrationsResponse { repeated Integration list = 1; }
+message GetIntegrationRequest {
+  string project_id = 1;
+  string id = 2;
+}
+message CreateIntegrationRequest {
+  string project_id = 1;
+  string actor_user_id = 2;
+  string name = 3;
+  string type = 4;                       // REST | KAFKA | DB
+  google.protobuf.Struct config = 5;
+  string secret = 6;                     // write-only; never echoed back
+  string status = 7;                     // optional (default active)
+}
+message UpdateIntegrationRequest {
+  string project_id = 1;
+  string actor_user_id = 2;
+  string id = 3;
+  string name = 4;                       // optional
+  google.protobuf.Struct config = 5;     // optional
+  string secret = 6;                     // applied only when set_secret=true
+  bool set_secret = 7;                   // true => replace/clear secret
+  string status = 8;                     // optional
+}
+message DeleteIntegrationRequest {
+  string project_id = 1;
+  string actor_user_id = 2;
+  string id = 3;
+}
+
+message ApiKey {
+  string id = 1;
+  string project_id = 2;
+  string name = 3;
+  string prefix = 4;                     // display prefix (e.g. "ffk_ab12cd34")
+  string key_masked = 5;                 // masked rendering for lists
+  string status = 6;                     // active | revoked
+  string created_by = 7;
+  string created_at = 8;
+  string last_used_at = 9;
+  string revoked_at = 10;
+}
+
+message ListApiKeysRequest { string project_id = 1; }
+message ListApiKeysResponse { repeated ApiKey list = 1; }
+message CreateApiKeyRequest {
+  string project_id = 1;
+  string actor_user_id = 2;
+  string name = 3;
+}
+message CreateApiKeyResponse {
+  ApiKey key = 1;
+  string plaintext = 2;                  // FULL key — returned ONCE, never again
+}
+message RevokeApiKeyRequest {
+  string project_id = 1;
+  string actor_user_id = 2;
+  string id = 3;
+}
+message ValidateProjectApiKeyRequest {
+  string key_hash = 1;                   // sha-256(hex) of the presented ffk_ key
+}
+message ValidateProjectApiKeyResponse {
+  bool valid = 1;                        // true only for an existing, active key
+  string project_id = 2;                 // owning project (empty when !valid)
+  string key_id = 3;                     // ProjectApiKey.id (empty when !valid)
+  string name = 4;                       // key name (empty when !valid)
+  string status = 5;                     // "active" when valid; empty otherwise
+}
+
+// BX-INTEG-5: one journaled terminal delivery attempt-chain. The HMAC secret and
+// the request/response body are never carried here.
+message WebhookDelivery {
+  string id = 1;
+  string project_id = 2;
+  string integration_id = 3;
+  string event_type = 4;                 // routing key, e.g. crm.deal.won
+  string url = 5;                        // delivery endpoint (non-secret)
+  int32 http_code = 6;                   // last response status (0 = never received one)
+  string status = 7;                     // success | dead_lettered
+  int32 attempts = 8;                    // POST attempts made (0 = blocked before send)
+  string error = 9;                      // failure reason (empty on success)
+  string created_at = 10;
+}
+message ListWebhookDeliveriesRequest {
+  string project_id = 1;
+  string integration_id = 2;
+  int32 limit = 3;                       // optional; server default 50, cap 200
+}
+message ListWebhookDeliveriesResponse { repeated WebhookDelivery list = 1; }
+
+service IntegrationGrpc {
+  rpc ListIntegrations(ListIntegrationsRequest) returns (ListIntegrationsResponse);
+  rpc GetIntegration(GetIntegrationRequest) returns (Integration);
+  rpc CreateIntegration(CreateIntegrationRequest) returns (Integration);
+  rpc UpdateIntegration(UpdateIntegrationRequest) returns (Integration);
+  rpc DeleteIntegration(DeleteIntegrationRequest) returns (OkResponse);
+
+  rpc ListApiKeys(ListApiKeysRequest) returns (ListApiKeysResponse);
+  rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse);
+  rpc RevokeApiKey(RevokeApiKeyRequest) returns (OkResponse);
+
+  // Validate an inbound project API key by its sha-256 hash (the gateway
+  // ProjectApiKeyGuard hashes the presented `ffk_…` and calls this). Returns
+  // the owning project + key identity when the key exists and is active; a
+  // fail-closed `{ valid:false }` (no project leaked) otherwise.
+  rpc ValidateProjectApiKey(ValidateProjectApiKeyRequest) returns (ValidateProjectApiKeyResponse);
+
+  // BX-INTEG-5: outbound webhook delivery journal of one REST integration, newest
+  // first (backs the manage-gated "Deliveries" panel BFF).
+  rpc ListWebhookDeliveries(ListWebhookDeliveriesRequest) returns (ListWebhookDeliveriesResponse);
+}

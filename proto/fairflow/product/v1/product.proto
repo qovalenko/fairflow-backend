@@ -1,0 +1,115 @@
+syntax = "proto3";
+package fairflow.product.v1;
+
+import "google/protobuf/struct.proto";
+
+message Product {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string category = 4;
+  double price = 5;
+  string unit = 6;
+  string order_type_id = 7;
+  string order_type_name = 8;
+  int32 deals_count = 9;
+  int32 orders_count = 10;
+  int64 created_at = 11;
+  int64 updated_at = 12;
+  // TO-BE fields (product.md §6.1)
+  double effective_price = 13;
+  string currency = 14;
+  bool order_type_dangling = 15;
+  google.protobuf.Struct prefill = 16;
+  string status = 17; // active | archived
+  int64 archived_at = 18;
+  string owner_department_id = 19;
+  int32 active_deals_count = 20;
+}
+
+message ListProductsRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+  string query = 4;
+  string category = 5;
+  string status = 6; // active | archived | all (default active)
+  string sort = 7;   // name | updatedAt
+}
+message ListProductsResponse { repeated Product list = 1; int64 total = 2; }
+message GetProductRequest { string project_id = 1; string id = 2; }
+message CreateProductRequest {
+  string project_id = 1;
+  string name = 2;
+  string description = 3;
+  string category = 4;
+  double price = 5;
+  string unit = 6;
+  string order_type_id = 7;
+  string order_type_name = 8;
+  string currency = 9;
+  google.protobuf.Struct prefill = 10;
+  string owner_department_id = 11;
+}
+message UpdateProductRequest {
+  string project_id = 1;
+  string id = 2;
+  string name = 3;
+  string description = 4;
+  string category = 5;
+  double price = 6;
+  string unit = 7;
+  string order_type_id = 8;
+  string order_type_name = 9;
+  string currency = 10;
+  google.protobuf.Struct prefill = 11;
+}
+message DeleteProductRequest { string project_id = 1; string id = 2; bool force = 3; }
+message DeleteProductResponse { bool ok = 1; ProductAffected affected = 2; }
+
+message ArchiveProductRequest { string project_id = 1; string id = 2; }
+message RestoreProductRequest { string project_id = 1; string id = 2; }
+
+message ProductAffectedByUser { string user_id = 1; int32 deals = 2; int32 orders = 3; }
+message ProductAffectedByDepartment { string department_id = 1; int32 deals = 2; int32 orders = 3; }
+message ProductAffected {
+  int32 deals = 1;
+  int32 orders = 2;
+  int32 active_deals = 3;
+  repeated ProductAffectedByUser by_user = 4;
+}
+message ArchiveProductResponse { bool ok = 1; ProductAffected affected = 2; }
+
+message GetProductUsageRequest { string project_id = 1; string id = 2; string department_id = 3; }
+message GetProductUsageResponse {
+  int32 deals_count = 1;
+  int32 active_deals_count = 2;
+  int32 orders_count = 3;
+  repeated ProductAffectedByDepartment by_department = 4;
+  repeated ProductAffectedByUser by_user = 5;
+}
+
+message ListCategoriesRequest { string project_id = 1; }
+message ListCategoriesResponse { repeated string categories = 1; }
+
+// Reconciliation: recompute deals_count/orders_count for a product (or every product
+// of the project when id is empty) from the cross-domain count RPCs (pipe/orders),
+// scoped by project_id from metadata (S7 — IDOR-safe). Used for backfill/drift-repair.
+message RecountProductUsageRequest { string project_id = 1; string id = 2; }
+// recounted — продукты, сверенные ПОЛНОСТЬЮ (ответили оба источника, pipe и orders);
+// skipped — продукты, у которых хотя бы один источник был недоступен: их счётчики
+// обновлены частично либо не тронуты вовсе (нулями не затираются, TODO-229).
+message RecountProductUsageResponse { int32 recounted = 1; int32 skipped = 2; }
+
+service ProductGrpc {
+  rpc ListProducts(ListProductsRequest) returns (ListProductsResponse);
+  rpc GetProduct(GetProductRequest) returns (Product);
+  rpc CreateProduct(CreateProductRequest) returns (Product);
+  rpc UpdateProduct(UpdateProductRequest) returns (Product);
+  rpc ArchiveProduct(ArchiveProductRequest) returns (ArchiveProductResponse);
+  rpc RestoreProduct(RestoreProductRequest) returns (Product);
+  rpc DeleteProduct(DeleteProductRequest) returns (DeleteProductResponse);
+  rpc GetProductUsage(GetProductUsageRequest) returns (GetProductUsageResponse);
+  rpc ListCategories(ListCategoriesRequest) returns (ListCategoriesResponse);
+  rpc RecountProductUsage(RecountProductUsageRequest) returns (RecountProductUsageResponse);
+}

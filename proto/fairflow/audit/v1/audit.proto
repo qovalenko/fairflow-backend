@@ -1,0 +1,81 @@
+syntax = "proto3";
+package fairflow.audit.v1;
+
+message AuditEvent {
+  string id = 1;
+  string project_id = 2;
+  string event_name = 3;
+  string entity_type = 4;
+  string entity_id = 5;
+  string actor_id = 6;
+  string actor_type = 7;
+  string payload_json = 8;
+  string request_id = 9;
+  string trace_id = 10;
+  int64 created_at = 11;
+}
+
+message AppendEventRequest {
+  string project_id = 1;
+  string event_name = 2;
+  string entity_type = 3;
+  string entity_id = 4;
+  string actor_id = 5;
+  string actor_type = 6;
+  string payload_json = 7;
+  string request_id = 8;
+  string trace_id = 9;
+}
+
+message ListEventsRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+  string entity_type = 4;
+  string entity_id = 5;
+}
+
+message ListEventsResponse {
+  repeated AuditEvent list = 1;
+  int64 total = 2;
+}
+
+message GetEventRequest {
+  string project_id = 1;
+  string id = 2;
+}
+
+// VerifyAuditChain (E3-03, FR-EVT-20, RFC-ACCESS-GROUPS R8): integrity check of
+// the immutable hash-chain. Read-only by effect (never mutates the journal).
+message VerifyAuditChainRequest {
+  // Chain level: "org" (structural/admin — roles/modules/group-membership, R8)
+  // or "record" (CRM record changes). Defaults: org if organization_id set,
+  // else record.
+  string level = 1;
+  string organization_id = 2;
+  // Optional project scope. org-level chain is per-(org, project); empty project
+  // is its own chain.
+  string project_id = 3;
+}
+
+message AuditChainBreak {
+  int64 seq = 1;
+  string expected_hash = 2;
+  string actual_hash = 3;
+  string reason = 4; // hash_mismatch | prev_hash_mismatch | seq_gap
+}
+
+message VerifyAuditChainResponse {
+  string chain_key = 1;
+  string status = 2; // ok | broken
+  int64 checked = 3;
+  AuditChainBreak broken_at = 4;
+  int64 verified_at = 5;
+}
+
+service AuditGrpc {
+  rpc AppendEvent(AppendEventRequest) returns (AuditEvent);
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
+  rpc GetEvent(GetEventRequest) returns (AuditEvent);
+  rpc VerifyAuditChain(VerifyAuditChainRequest) returns (VerifyAuditChainResponse);
+}

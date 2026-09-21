@@ -1,0 +1,368 @@
+syntax = "proto3";
+package fairflow.orders.v1;
+
+message OrderTypeField {
+  string key = 1;
+  string label = 2;
+  string type = 3;
+  bool required = 4;
+  repeated string options = 5;
+  string default_value = 6;
+  // JSON-encoded validation spec { pattern?, min?, max?, minLen?, maxLen? }.
+  string validation_json = 7;
+  bool deprecated = 8;
+}
+message OrderTypeStage {
+  string id = 1;
+  string name = 2;
+  int32 order = 3;
+  repeated string required_field_keys = 4;
+  bool is_terminal = 5;
+}
+message OrderType {
+  string id = 1;
+  string name = 2;
+  repeated OrderTypeField fields = 3;
+  repeated OrderTypeStage stages = 4;
+  int32 schema_version = 5;
+  bool webhook_enabled = 6;
+  int32 active_orders = 7;
+  // TO-BE (WM2): versioning + soft-delete.
+  int32 current_version = 8;
+  string description = 9;
+  int64 deleted_at = 10; // 0 = not deleted
+}
+
+// Immutable revision specification of an order type (TO-BE).
+message OrderTypeRevision {
+  int32 version = 1;
+  // DRAFT | PUBLISHED. Фактически домен пишет ТОЛЬКО 'PUBLISHED': черновиков
+  // ревизий не существует (TODO-418 / FR-ORDERS-050, открытый вопрос
+  // OQ-ORDERS-040). Потребителю ветку DRAFT ждать неоткуда — не закладывайтесь
+  // на неё, пока владелец не ответит, нужны ли черновики.
+  string status = 2;
+  repeated OrderTypeField fields = 3;
+  repeated OrderTypeStage stages = 4;
+  // JSON-encoded final action spec { type, config, payloadTemplate?, idempotencyKeyTemplate? }.
+  string final_action_spec_json = 5;
+  // JSON-encoded retry policy { maxAttempts, strategy, baseIntervalSec, maxWaitSec }.
+  string retry_policy_json = 6;
+  string terminal_stage_id = 7;
+  // JSON-encoded documentTemplates: DocTemplateRef[].
+  string document_templates_json = 8;
+  int64 created_at = 9;
+  string created_by = 10;
+}
+
+message OrderTypeDetail {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  int32 current_version = 4;
+  int64 deleted_at = 5; // 0 = not deleted
+  OrderTypeRevision revision = 6;
+}
+
+// Final-action attempt log entry.
+message FinalActionAttempt {
+  int64 at = 1;
+  int32 attempt_no = 2;
+  int32 response_code = 3;
+  string error_body = 4;
+  int32 duration_ms = 5;
+}
+message FinalActionState {
+  string status = 1; // IDLE | PENDING | PAUSED | SUCCEEDED | FAILED
+  string idempotency_key = 2;
+  int32 payload_gen = 3;
+  repeated FinalActionAttempt attempts = 4;
+  string last_error = 5;
+  int64 succeeded_at = 6;
+}
+
+message Order {
+  string id = 1;
+  string number = 2;
+  string type_id = 3;
+  string type_name = 4;
+  string product_id = 5;
+  string product_name = 6;
+  // FR-PRODUCTS-180: immutable catalog snapshot at link time (price/currency/unit/category).
+  double product_price = 29;
+  string product_currency = 30;
+  string product_unit = 31;
+  string product_category = 32;
+  string deal_id = 7;
+  string deal_name = 8;
+  string contact_id = 9;
+  string contact_name = 10;
+  string company_id = 11;
+  string company_name = 12;
+  string stage_id = 13;
+  string stage_name = 14;
+  string assignee_id = 15;
+  string assignee_name = 16;
+  string fields_json = 17;
+  string status = 18;
+  string dlq_error = 19;
+  int64 created_at = 20;
+  int64 updated_at = 21;
+  // TO-BE (WM2).
+  int32 order_type_version = 22;
+  int64 stage_changed_at = 23;
+  string created_by = 24;
+  string snapshot_json = 25;
+  bool has_drift = 26;
+  FinalActionState final_action_state = 27;
+  // Free-form sale notes — stored separately from validated `fields_json` (FR-ORDERS-200).
+  string notes = 28;
+}
+
+message ListOrderTypesRequest {
+  string project_id = 1;
+  bool include_deleted = 2;
+}
+message ListOrderTypesResponse { repeated OrderType list = 1; }
+message GetOrderTypeRequest {
+  string project_id = 1;
+  string id = 2;
+  int32 version = 3; // 0 = currentVersion
+}
+message OrderTypeSpec {
+  string name = 1;
+  string description = 2;
+  repeated OrderTypeField fields = 3;
+  repeated OrderTypeStage stages = 4;
+  string final_action_spec_json = 5;
+  string retry_policy_json = 6;
+  string document_templates_json = 7;
+}
+message CreateOrderTypeRequest {
+  string project_id = 1;
+  OrderTypeSpec spec = 2;
+}
+message UpdateOrderTypeRequest {
+  string project_id = 1;
+  string id = 2;
+  OrderTypeSpec spec = 3;
+}
+message DeleteOrderTypeRequest { string project_id = 1; string id = 2; }
+message DeleteOrderTypeResponse { string id = 1; int64 deleted_at = 2; }
+message RestoreOrderTypeRequest { string project_id = 1; string id = 2; }
+
+message ListOrdersRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+  string query = 4;
+  string deal_id = 5;
+  string type_id = 6;
+  string status = 7;
+  string stage_id = 8;
+  int32 stale_days = 9;
+  string contact_id = 10;   // reverse index: orders linked to a contact (card/links aggregate)
+  string company_id = 11;   // reverse index: orders linked to a company (card aggregate)
+}
+message ListOrdersResponse { repeated Order list = 1; int64 total = 2; }
+message GetOrdersKanbanRequest { string project_id = 1; string type_id = 2; }
+message OrderKanbanColumn {
+  string stage_id = 1;
+  string stage_name = 2;
+  repeated Order orders = 3;
+}
+message GetOrdersKanbanResponse {
+  string type_id = 1;
+  repeated OrderTypeStage stages = 2;
+  repeated OrderKanbanColumn columns = 3;
+}
+message GetOrderRequest { string project_id = 1; string id = 2; }
+message CreateOrderRequest {
+  string project_id = 1;
+  string deal_id = 2;
+  string order_type_id = 3;
+  string contact_id = 4;
+  string company_id = 5;
+  string assignee_id = 6;
+  string notes = 7;
+  string fields_json = 8;
+  string product_id = 9;
+}
+message UpdateOrderRequest {
+  string project_id = 1;
+  string id = 2;
+  string fields_json = 3;
+  string assignee_id = 4;
+  // Presence matters: absent = leave unchanged; present (even '') = set/clear.
+  optional string notes = 5;
+}
+message MoveOrderStageRequest {
+  string project_id = 1;
+  string order_id = 2;
+  string stage_id = 3;
+  bool accept_drift = 4;
+}
+message CancelOrderRequest {
+  string project_id = 1;
+  string id = 2;
+  string reason = 3;
+  string user_id = 4;
+}
+message CheckDriftRequest { string project_id = 1; string id = 2; }
+message DriftDiff {
+  string entity = 1;
+  string field = 2;
+  string old = 3;
+  string new = 4;
+}
+message CheckDriftResponse {
+  bool has_drift = 1;
+  string source_state = 2; // present | merged | deleted
+  repeated DriftDiff diffs = 3;
+}
+// `user_id` + `roles` (both removed, TODO-289): the actor's identity AND roles are
+// read ONLY from the trusted gateway metadata (`x-user-id` / `x-roles`). A
+// body-supplied identity is caller-controlled input to the very gates these RPCs
+// are protected by — `requireOwnerOrManager` treats `assigneeId == actor.userId`
+// as ownership, so a payload `user_id` was a self-granted owner claim. Tags stay
+// reserved so they are never reused.
+message AcceptDriftRequest {
+  string project_id = 1;
+  string id = 2;
+  reserved 3, 4;
+  reserved "user_id", "roles";
+}
+message RetryFinalActionRequest {
+  string project_id = 1;
+  string id = 2;
+  reserved 3, 4;
+  reserved "user_id", "roles";
+}
+message ReassignOrdersRequest {
+  string project_id = 1;
+  string from_assignee_id = 2;
+  string to_assignee_id = 3;
+  string type_id = 4;
+  string status = 5;
+  string stage_id = 6;
+  reserved 7, 8;
+  reserved "user_id", "roles";
+}
+message ReassignOrdersResponse { int32 reassigned = 1; }
+message GetOrdersSummaryForDealRequest { string project_id = 1; string deal_id = 2; }
+message OrderSummaryItem {
+  string id = 1;
+  string number = 2;
+  string status = 3;
+  string stage_id = 4;
+  string assignee_name = 5;
+  // Display names for the deal-card widget (FR-ORDERS-440): the aggregate must
+  // carry what the screen renders, or the widget regresses to a full list scan.
+  string stage_name = 6;
+  string type_name = 7;
+  string product_name = 8;
+  string deal_name = 9;
+}
+message OrderStatusCount {
+  string status = 1;
+  int32 count = 2;
+}
+message GetOrdersSummaryForDealResponse {
+  int32 total = 1;
+  repeated OrderStatusCount by_status = 2;
+  repeated OrderSummaryItem items = 3;
+}
+// enabled_modules: итоговый набор включённых модулей проекта (FR-ONB-7/9). control
+// не вызывает ProvisionDefaults, когда orders ∉ enabled_modules; домен также не
+// создаёт типы продаж лениво, если orders выключен (целостность модули↔данные).
+message ProvisionDefaultsRequest { string project_id = 1; string template_id = 2; repeated string enabled_modules = 3; }
+message ProvisionDefaultsResponse { bool created = 1; int32 order_types = 2; }
+
+// Cross-domain read-only count (product delete-guard / reconciliation, product.md §3.10).
+// Scoped by project_id (from metadata, S7) — counts ONLY this project's orders.
+message CountOrdersByProductRequest { string project_id = 1; string product_id = 2; }
+message CountOrdersByProductResponse { int32 count = 1; }
+
+// --- Document variable provider (documents.md §4) ---
+message ResolveDocumentVariablesRequest {
+  string project_id = 1;
+  string record_id = 2;
+}
+message ResolveDocumentVariablesResponse {
+  map<string, string> values = 1;      // flat key→value, e.g. {"order.number":"123","order.field.city":"Москва"}
+  string source_hash = 2;              // hash of the requisites (drift detection)
+  repeated string empty_required = 3;  // required variables that resolved empty
+}
+
+// FR-ORDERS-255: drift-gate + `crm.order.document_requested` before document generation.
+message RequestOrderDocumentRequest {
+  string project_id = 1;
+  string order_id = 2;
+  string template_id = 3;
+  bool accept_drift = 4;
+}
+
+// FR-ORDERS-135: batch create sales from one deal (one per product).
+message BatchOrderItem {
+  string product_id = 1;
+  string order_type_id = 2;
+  string fields_json = 3;
+  string notes = 4;
+}
+message BatchOrderError {
+  int32 index = 1;
+  string code = 2;
+  string message = 3;
+}
+message CreateOrdersBatchRequest {
+  string project_id = 1;
+  string deal_id = 2;
+  string contact_id = 3;
+  string company_id = 4;
+  string assignee_id = 5;
+  repeated BatchOrderItem items = 6;
+}
+message CreateOrdersBatchResponse {
+  repeated Order created = 1;
+  repeated BatchOrderError errors = 2;
+}
+
+// FR-PROJ-215
+message CountMemberOwnedRecordsRequest {
+  string project_id = 1;
+  string user_id = 2;
+}
+message CountMemberOwnedRecordsResponse { int32 count = 1; }
+message ReassignMemberOwnedRecordsRequest {
+  string project_id = 1;
+  string from_user_id = 2;
+  string to_user_id = 3;
+}
+message ReassignMemberOwnedRecordsResponse { int32 reassigned = 1; }
+
+service OrdersGrpc {
+  rpc ResolveDocumentVariables(ResolveDocumentVariablesRequest) returns (ResolveDocumentVariablesResponse);
+  rpc RequestOrderDocument(RequestOrderDocumentRequest) returns (ResolveDocumentVariablesResponse);
+  rpc CountOrdersByProduct(CountOrdersByProductRequest) returns (CountOrdersByProductResponse);
+  rpc ListOrderTypes(ListOrderTypesRequest) returns (ListOrderTypesResponse);
+  rpc GetOrderType(GetOrderTypeRequest) returns (OrderTypeDetail);
+  rpc CreateOrderType(CreateOrderTypeRequest) returns (OrderTypeDetail);
+  rpc UpdateOrderType(UpdateOrderTypeRequest) returns (OrderTypeDetail);
+  rpc DeleteOrderType(DeleteOrderTypeRequest) returns (DeleteOrderTypeResponse);
+  rpc RestoreOrderType(RestoreOrderTypeRequest) returns (OrderTypeDetail);
+  rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse);
+  rpc GetOrdersKanban(GetOrdersKanbanRequest) returns (GetOrdersKanbanResponse);
+  rpc GetOrder(GetOrderRequest) returns (Order);
+  rpc CreateOrder(CreateOrderRequest) returns (Order);
+  rpc CreateOrdersBatch(CreateOrdersBatchRequest) returns (CreateOrdersBatchResponse);
+  rpc UpdateOrder(UpdateOrderRequest) returns (Order);
+  rpc MoveOrderToStage(MoveOrderStageRequest) returns (Order);
+  rpc CancelOrder(CancelOrderRequest) returns (Order);
+  rpc CheckDrift(CheckDriftRequest) returns (CheckDriftResponse);
+  rpc AcceptDrift(AcceptDriftRequest) returns (Order);
+  rpc RetryFinalAction(RetryFinalActionRequest) returns (Order);
+  rpc ReassignOrders(ReassignOrdersRequest) returns (ReassignOrdersResponse);
+  rpc GetOrdersSummaryForDeal(GetOrdersSummaryForDealRequest) returns (GetOrdersSummaryForDealResponse);
+  rpc ProvisionDefaults(ProvisionDefaultsRequest) returns (ProvisionDefaultsResponse);
+  rpc CountMemberOwnedRecords(CountMemberOwnedRecordsRequest) returns (CountMemberOwnedRecordsResponse);
+  rpc ReassignMemberOwnedRecords(ReassignMemberOwnedRecordsRequest) returns (ReassignMemberOwnedRecordsResponse);
+}

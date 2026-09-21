@@ -1,0 +1,169 @@
+syntax = "proto3";
+package fairflow.notification.v1;
+
+message Notification {
+  string id = 1;
+  string project_id = 2;
+  string user_id = 3;
+  string channel = 4;
+  string title = 5;
+  string body = 6;
+  string data_json = 7;
+  string status = 8;
+  bool readed = 9;
+  string email_to = 10;
+  int64 created_at = 11;
+  int64 sent_at = 12;
+  int64 read_at = 13;
+  // TO-BE extension (additive, contract §4 / RFC-4)
+  string category = 14;
+  string event_type = 15;
+  string severity = 16;
+  repeated string channels = 17;
+  string entity_type = 18;
+  string entity_id = 19;
+  string email_status = 20;
+}
+
+message SendNotificationRequest {
+  string project_id = 1;
+  string user_id = 2;
+  string channel = 3;
+  string title = 4;
+  string body = 5;
+  string data_json = 6;
+  string email_to = 7;
+  string category = 8;
+  string idempotency_key = 9;
+  string event_type = 10;
+}
+
+message ListNotificationsRequest {
+  string project_id = 1;
+  string user_id = 2;
+  int32 page_index = 3;
+  int32 page_size = 4;
+  bool unread_only = 5;
+  string scope = 6;
+  string category = 7;
+}
+
+message ListNotificationsResponse {
+  repeated Notification list = 1;
+  int64 total = 2;
+}
+
+message MarkReadRequest {
+  string project_id = 1;
+  string user_id = 2;
+  string notification_id = 3;
+}
+
+message MarkAllReadRequest {
+  string project_id = 1;
+  string user_id = 2;
+  string scope = 3;
+}
+
+message MarkAllReadResponse {
+  int32 updated = 1;
+  int64 unread = 2;
+}
+
+message CountNotificationsRequest {
+  string project_id = 1;
+  string user_id = 2;
+  bool unread_only = 3;
+  string scope = 4;
+}
+
+message CountNotificationsResponse {
+  int64 count = 1;
+}
+
+message GetPreferencesRequest {
+  string user_id = 1;
+}
+
+message CategoryPref {
+  string category = 1;
+  bool in_app = 2;
+  bool email = 3;
+  bool escalate_offline = 4;
+}
+
+message QuietHours {
+  string from = 1;
+  string to = 2;
+  string tz = 3;
+}
+
+message Preferences {
+  string user_id = 1;
+  string email_mode = 2;
+  string digest_time = 3;
+  string timezone = 4;
+  repeated CategoryPref categories = 5;
+  QuietHours quiet_hours = 6;
+  int64 updated_at = 7;
+}
+
+message UpdatePreferencesRequest {
+  // user_id intentionally absent: addressee resolved from metadata x-user-id (SEC-N-5)
+  string actor_user_id = 1;
+  string email_mode = 2;
+  string digest_time = 3;
+  string timezone = 4;
+  repeated CategoryPref categories = 5;
+  QuietHours quiet_hours = 6;
+}
+
+message GetCatalogRequest {
+  string project_id = 1;
+}
+
+message CategorySpec {
+  string category = 1;
+  string module = 2;
+  string title = 3;
+  string severity = 4;
+  repeated string default_channels = 5;
+  bool mandatory = 6;
+}
+
+message CatalogResponse {
+  repeated CategorySpec categories = 1;
+}
+
+// Project-less transactional email (auth flows: verify-email, password reset,
+// email-change). NOT written to the in-app feed — a pure email send. `to` is the
+// recipient address resolved by the trusted caller (auth via gateway), since the
+// addressee may not yet be a logged-in user. `kind` selects the template; the
+// optional subject/title/body override the template copy.
+message SendTransactionalEmailRequest {
+  string to = 1;
+  string kind = 2;          // verify_email | password_reset | email_change | org_invitation | generic
+  string action_url = 3;    // CTA deep-link (full URL)
+  string user_name = 4;     // optional greeting
+  string subject = 5;       // optional override
+  string title = 6;         // optional override
+  string body = 7;          // optional override
+}
+
+message SendTransactionalEmailResponse {
+  string status = 1;        // sent | failed | skipped
+  string message_id = 2;
+  string error = 3;
+}
+
+service NotificationGrpc {
+  rpc Send(SendNotificationRequest) returns (Notification);
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse);
+  rpc MarkRead(MarkReadRequest) returns (Notification);
+  rpc MarkAllRead(MarkAllReadRequest) returns (MarkAllReadResponse);
+  rpc GetCount(CountNotificationsRequest) returns (CountNotificationsResponse);
+  rpc GetPreferences(GetPreferencesRequest) returns (Preferences);
+  rpc UpdatePreferences(UpdatePreferencesRequest) returns (Preferences);
+  rpc GetCatalog(GetCatalogRequest) returns (CatalogResponse);
+  rpc SendTransactionalEmail(SendTransactionalEmailRequest) returns (SendTransactionalEmailResponse);
+}

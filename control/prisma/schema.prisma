@@ -1,0 +1,510 @@
+// Control service: organizations, projects, members (PostgreSQL schema "control")
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  schemas  = ["control"]
+}
+
+// box is single-tenant: the instance IS the (implicit) organization — "the System".
+// There is no selectable / creatable / switchable Organization entity anymore
+// (DEORG-W1). SystemSettings is the singleton holding the system's requisites
+// (the former org profile). Exactly one row ever exists, with the well-known id
+// `system` (SYSTEM_ID). Child records (Employee/Department/Invitation/OrgAuditLog/
+// Project.ownerId/…) carry `organizationId`/`ownerId` = SYSTEM_ID as a plain
+// system-anchor string — the FK to the dropped Organization table is gone.
+model SystemSettings {
+  id        String   @id
+  name      String
+  slug      String   @unique
+  // Requisites (system/org profile). All optional — filled in the profile screen.
+  inn           String?
+  kpp           String?
+  ogrn          String?
+  legalAddress  String? @map("legal_address")
+  actualAddress String? @map("actual_address")
+  phone         String?
+  email         String?
+  logoUrl       String? @map("logo_url")
+  description   String?
+  isActive  Boolean  @default(true) @map("is_active")
+  /** FR-ORG-235: confirmed Department→AccessUnit backfill; visibility resolver switches graph source only when true. */
+  accessUnitsBackfilled Boolean @default(false) @map("access_units_backfilled")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+  @@schema("control")
+}
+
+model Project {
+  id        String   @id
+  // DEORG-W1: ownership is always the System. `ownerId` = SYSTEM_ID (the single
+  // system anchor). The former `owner_type` (PERSONAL|ORGANIZATION) is dropped —
+  // there is no personal vector in box.
+  ownerId   String   @map("owner_id")
+  name      String
+  templateId String? @map("template_id")
+  modules   String[] @default([]) // e.g. ["contacts","companies","deals","orders","activities","products","reports","documents","automation"]
+  moduleConfigs Json? @map("module_configs")
+  modulePolicies Json? @map("module_policies")
+  // Phase 4d: per-project record-visibility config { projectRole: visibilityLevel } (spec §13.4).
+  visibilityConfig Json? @map("visibility_config")
+  isArchived Boolean  @default(false) @map("is_archived")
+  // C5: project lifecycle state — "active" | "archived" | "pending_deletion" |
+  // "purged" (P2.e terminal tombstone after the grace-window physical purge).
+  // isArchived kept in sync for backward-compat (true when not active).
+  status    String   @default("active")
+  // C5: when status=pending_deletion — RFC3339 instant after which a purge may run.
+  deletionScheduledAt DateTime? @map("deletion_scheduled_at")
+  // FR-PROJ-095: observable template provisioning — pending | complete | failed.
+  provisioningStatus String @default("complete") @map("provisioning_status")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  members           ProjectMember[]
+  projectInvitations ProjectInvitation[]
+
+  @@index([ownerId])
+  @@schema("control")
+}
+
+// FR-PROJ-250: project-scoped email invitation (one-time token, atomic accept).
+model ProjectInvitation {
+  id              String    @id
+  projectId       String    @map("project_id")
+  email           String
+  role            String    // project role granted on accept
+  token           String    @unique
+  status          String    @default("pending") // pending | accepted | revoked
+  invitedByUserId String    @map("invited_by_user_id")
+  acceptedUserId  String?   @map("accepted_user_id")
+  expiresAt       DateTime  @map("expires_at")
+  acceptedAt      DateTime? @map("accepted_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([email])
+  @@index([projectId, email, status])
+  @@schema("control")
+}
+
+model ProjectMember {
+  id        String   @id
+  projectId String   @map("project_id")
+  userId    String   @map("user_id")   // from auth
+  role      String   // "owner" | "admin" | "manager" | "member" | "viewer"
+  // FR-MORG-3: provenance of this membership. "manual" = explicitly assigned (and
+  // never touched by a binding recompute); "binding" = materialized from a
+  // DepartmentProjectBinding. Existing rows are "manual".
+  source       String  @default("manual")
+  // For source="binding": which department produced this membership (the employee's
+  // department at materialization time) and which binding row is its source of truth.
+  departmentId String? @map("department_id")
+  bindingId    String? @map("binding_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+  @@index([bindingId])
+  @@schema("control")
+}
+
+// FR-MORG-7/8/9/10/11: a department "works in" a project as a default project role.
+// This is the single source of truth for the intent "department D participates in
+// project P as role R"; the ProjectMember(source="binding") rows are the derived
+// materialization. One binding per (department, project).
+model DepartmentProjectBinding {
+  id             String   @id
+  organizationId String   @map("organization_id")
+  departmentId   String   @map("department_id")
+  projectId      String   @map("project_id")
+  // PROJECT role (owner|admin|manager|member|viewer or a custom project role), NOT
+  // an org role (FR-MORG-2). Materialized onto ProjectMember.role.
+  defaultRole    String   @map("default_role")
+  // v1: only "self" (the department itself). "subtree" is gated behind OQ-MORG-9.
+  scope          String   @default("self")
+  // "active" (materialized) | "suspended" (members dematerialized until re-activated).
+  status         String   @default("active")
+  createdBy      String?  @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([departmentId, projectId])
+  @@index([organizationId])
+  @@index([projectId])
+  @@schema("control")
+}
+
+// K3-invalidation (Д-4): per-project access epoch. Bumped on any access-affecting
+// mutation (role/member/policy/visibility/share/role-grant/revoke). The gateway
+// reads it cheaply to detect that its cached access decisions are stale → ~0 lag
+// event-driven invalidation that replaces the Stage-0 TTL mitigation (E0-04/Д-6).
+model ProjectAccessEpoch {
+  projectId String   @id @map("project_id")
+  epoch     BigInt   @default(1)
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@schema("control")
+}
+
+model Department {
+  id             String   @id
+  organizationId String   @map("organization_id")
+  name           String
+  parentId       String?  @map("parent_id")
+  // Phase 4d: department head. Their subordinates = employees of this dept subtree.
+  leaderUserId   String?  @map("leader_user_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  parent       Department?  @relation("DepartmentHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children     Department[] @relation("DepartmentHierarchy")
+  employees     Employee[]
+
+  @@index([organizationId])
+  @@schema("control")
+}
+
+// ─── E2-06 Access Unit / Group (RFC-ACCESS-GROUPS §3.2). ───
+// Generalizes Department into one primitive with normalized membership.
+// Backfill maps Department→AccessUnit preserving id (ОВ-4), so RecordShare.granteeId
+// and parentId references migrate without rewrites. Lives in schema "control".
+model AccessUnit {
+  id           String    @id
+  scopeType    String    @map("scope_type") // "ORGANIZATION" | "PROJECT"
+  scopeId      String    @map("scope_id") // organizationId | projectId
+  name         String
+  kind         String // department | team | territory | custom
+  parentId     String?   @map("parent_id")
+  leaderUserId String?   @map("leader_user_id")
+  archivedAt   DateTime? @map("archived_at") // soft-delete: archived = excluded from resolve
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  parent   AccessUnit?        @relation("UnitHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children AccessUnit[]       @relation("UnitHierarchy")
+  members  AccessUnitMember[] @relation("UnitMembers")
+
+  @@index([scopeType, scopeId])
+  @@index([scopeId, kind])
+  @@index([parentId])
+  @@schema("control")
+}
+
+model AccessUnitMember {
+  id         String   @id
+  unitId     String   @map("unit_id")
+  memberType String   @map("member_type") // "user" | "group" (nested groups)
+  memberId   String   @map("member_id") // userId | childGroupId
+  addedBy    String?  @map("added_by")
+  addedAt    DateTime @default(now()) @map("added_at")
+
+  unit AccessUnit @relation("UnitMembers", fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@unique([unitId, memberType, memberId]) // no duplicate membership
+  @@index([memberType, memberId]) // reverse lookup: "which units is X in"
+  @@index([unitId])
+  @@schema("control")
+}
+
+// Phase 4d: explicit per-record sharing (spec §13.4). Resource + record id are
+// opaque references into the CRM domains (Mongo); control owns the grants.
+model RecordShare {
+  id          String   @id
+  projectId   String   @map("project_id")
+  resource    String   // contacts | companies | deals | orders | activities
+  recordId    String   @map("record_id")
+  granteeType String   @map("grantee_type") // user | department | unit (E2-06 alias for kind=department)
+  granteeId   String   @map("grantee_id")
+  createdBy   String   @map("created_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  // E2-11: optional expiry. A grant past `expiresAt` is treated as absent by the
+  // resolver (no row delete needed); null = permanent grant.
+  expiresAt   DateTime? @map("expires_at")
+
+  @@unique([projectId, resource, recordId, granteeType, granteeId])
+  @@index([projectId, resource, granteeType, granteeId])
+  @@index([projectId, resource, recordId])
+  @@schema("control")
+}
+
+model Employee {
+  id             String   @id
+  organizationId String   @map("organization_id")
+  userId         String   @map("user_id")   // from auth
+  departmentId   String?  @map("department_id")
+  role           String   // "platform_owner" | "platform_admin" | "employee"
+  // FR-MORG-23/43: soft-delete / seat lifecycle. Offboarding sets isActive=false —
+  // the row stays for audit/history while the seat is freed (used = COUNT isActive).
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  department   Department?  @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, userId])
+  @@index([organizationId, isActive])
+  @@index([userId])
+  @@schema("control")
+}
+
+model Invitation {
+  id               String    @id
+  organizationId   String    @map("organization_id")
+  email            String    // normalized (lower case) — the invitee
+  role             String    // org role to grant on accept: platform_admin | employee
+  departmentId     String?   @map("department_id")
+  token            String    @unique // opaque accept token (carried in the email link)
+  status           String    @default("pending") // pending | accepted | revoked
+  // Onboarding wizard step 4 (FR-ONB-10 / FR-AUTH-7): project memberships to
+  // grant on accept — [{ projectId, role }] (project role, NOT org role). Empty
+  // for a plain org-scoped invite. AcceptInvitation creates the ProjectMember(s)
+  // atomically with the Employee.
+  projectGrants    Json?     @map("project_grants")
+  invitedByUserId  String    @map("invited_by_user_id")
+  acceptedUserId   String?   @map("accepted_user_id") // auth user id once accepted
+  expiresAt        DateTime  @map("expires_at")
+  acceptedAt       DateTime? @map("accepted_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@index([organizationId])
+  @@index([email])
+  @@schema("control")
+}
+
+// ─── E2-01 RBAC: roles, assignments, grants, audit (permission-rbac/TZ.md §5). ───
+
+// Role = named permission-set. Source of truth for "role → permissions".
+model Role {
+  id                String   @id
+  scopeType         String   @map("scope_type")   // "system" | "organization" | "project"
+  scopeId           String?  @map("scope_id")      // null for system; orgId | projectId otherwise
+  key               String?                         // stable key of a system role: owner|admin|manager|member|viewer
+  name              String
+  kind              String   @default("custom")     // "system" | "custom"
+  // visibility neighbour: denormalized storage; no logic in the RBAC area.
+  defaultVisibility String?  @map("default_visibility")
+  isArchived        Boolean  @default(false) @map("is_archived")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  permissions RolePermission[]
+  assignments RoleAssignment[]
+
+  @@unique([scopeType, scopeId, key])
+  @@index([scopeType, scopeId])
+  @@schema("control")
+}
+
+// Atomic permission inside a role (subject:action).
+model RolePermission {
+  id        String  @id
+  roleId    String  @map("role_id")
+  subject   String                       // "deals" | "deals.stage" | "roles" | ...
+  action    String                       // read|write|delete|manage|move|export|execute|invoke
+  // CANON (Р-11, P8): stored but NOT evaluated in RBAC in v1. ABAC conditions are
+  // applied only via module-policies (see pdp.service). Kept for forward-compat — do not drop.
+  condition Json?                          // ABAC neighbour: stored, not evaluated in RBAC
+
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, subject, action])
+  @@index([roleId])
+  @@schema("control")
+}
+
+// Assignment of a role to a subject (user OR department), optionally module-scoped.
+model RoleAssignment {
+  id          String    @id
+  projectId   String    @map("project_id")     // isolation boundary
+  subjectType String    @default("user") @map("subject_type") // "user" | "department" | "unit"
+  subjectId   String    @map("subject_id")      // userId (auth) | departmentId | accessUnitId (control)
+  roleId      String    @map("role_id")
+  scope       String    @default("project")     // "project" | "module:<moduleId>"
+  expiresAt   DateTime? @map("expires_at")
+  createdBy   String    @map("created_by")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  role Role @relation(fields: [roleId], references: [id])
+
+  @@unique([projectId, subjectType, subjectId, roleId, scope])
+  @@index([projectId, subjectType, subjectId])
+  @@index([roleId])
+  @@schema("control")
+}
+
+// Grant overlay with a "to whom" axis. allow is addressed; deny without grantee = blanket.
+model PermissionGrant {
+  id          String   @id
+  projectId   String   @map("project_id")
+  moduleId    String   @map("module_id")
+  effect      String                          // "allow" | "deny"
+  subject     String
+  action      String
+  resource    String   @default("*")
+  granteeType String?  @map("grantee_type")   // "role" | "member" | "department"; allow => required
+  granteeId   String?  @map("grantee_id")
+  condition   Json?                            // ABAC neighbour
+  createdBy   String   @map("created_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([projectId, moduleId])
+  @@index([projectId, subject, action])
+  @@schema("control")
+}
+
+// Append-only audit of roles/assignments/grants (S6, BR-PERM-12). Separate table.
+model RoleAuditLog {
+  id          String   @id
+  projectId   String?  @map("project_id")
+  orgId       String?  @map("org_id")
+  actorUserId String?  @map("actor_user_id")   // null = system
+  action      String                            // role.created|role.updated|role.deleted|assignment.granted|assignment.revoked|grant.created|grant.deleted
+  entityType  String   @map("entity_type")      // "role" | "role_assignment" | "permission_grant"
+  entityId    String?  @map("entity_id")
+  summary     String?                            // human-readable denormalization (FR-PERM-22)
+  before      Json?
+  after       Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+  // P8 T5.1 (Р-5): tamper-evident hash chain. Chain is per-scope — by projectId
+  // for project-scoped entries, by orgId for org-scoped ones. `prevHash` is null
+  // for the genesis record of a chain; nullable overall so pre-chain legacy rows
+  // stay valid (backfill/genesis of live data is W7). See common/audit-chain.ts.
+  chainHash   String?  @map("chain_hash")
+  prevHash    String?  @map("prev_hash")
+
+  @@index([projectId, createdAt])
+  @@index([orgId, createdAt])
+  @@schema("control")
+}
+
+model OrgAuditLog {
+  id             String   @id
+  organizationId String   @map("organization_id")
+  actorUserId    String?  @map("actor_user_id") // null = system/service action
+  action         String   // e.g. "employee.added", "invitation.created", "organization.updated"
+  entityType     String   @map("entity_type") // "employee" | "department" | "invitation" | "organization" | "access_unit" | "access_unit_member" | "access_unit_composition" | "visibility_config"
+  entityId       String?  @map("entity_id")
+  metadata       Json?    // arbitrary details (diff, email, role…)
+  createdAt      DateTime @default(now()) @map("created_at")
+  // P8 T5.1 (Р-5): tamper-evident hash chain, per organizationId. `prevHash` is
+  // null for the genesis record; nullable overall so pre-chain legacy rows stay
+  // valid (genesis backfill of live data is W7). See common/audit-chain.ts.
+  chainHash      String?  @map("chain_hash")
+  prevHash       String?  @map("prev_hash")
+
+  @@index([organizationId, createdAt])
+  @@schema("control")
+}
+
+// ─── P8 T5.2 (X-10): transactional outbox for control → bus → audit.
+// Every rights/org/policy mutation writes an outbox row in the SAME transaction
+// as its audit-log append (RFC-4 §Р-1: no business record without an event). A
+// background relay publishes pending rows to the topic exchange at-least-once
+// (RFC-4 §Р-4); the audit consumer dedups on `idempotencyKey ?? messageId`, so a
+// re-publish after a crash never doubles the immutable chain record. The full
+// EventEnvelope is stored verbatim in `envelope` so the relay is a dumb pump.
+model ControlOutbox {
+  // messageId === envelope.messageId (UUIDv7) — broker transport dedup key.
+  messageId   String    @id @map("message_id")
+  routingKey  String    @map("routing_key")         // === envelope.type
+  projectId   String?   @map("project_id")          // duplicated for ops queries
+  status      String    @default("pending")         // pending | published | failed
+  attempts    Int       @default(0)
+  envelope    Json                                   // canonical EventEnvelope, published verbatim
+  lastError   String?   @map("last_error")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  publishedAt DateTime? @map("published_at")
+
+  // Relay pulls oldest pending first; partial index keeps the scan tiny.
+  @@index([status, createdAt])
+  @@schema("control")
+}
+
+// ─── F3-integ-be (U8): project integrations — minimal v1 config contour.
+// A ProjectIntegration is the connection config for an external system the
+// project talks to: REST / Kafka / DB. Secrets (api key, password, sasl) are
+// stored in a separate column and NEVER returned in list/get responses — only
+// a `secretSet` boolean leaks (pattern W0-control-idor). This is config-only:
+// actual event delivery (REST/Kafka push) is out of scope (stage-3 event axis).
+model ProjectIntegration {
+  id        String   @id
+  projectId String   @map("project_id")
+  name      String
+  type      String   // REST | KAFKA | DB
+  // Non-secret connection config (structured): for REST { endpoint, method,
+  // headers }, KAFKA { brokers, topic, clientId }, DB { driver, host, port,
+  // database, schema, sslMode }. Secrets live in `secret`, never here.
+  config    Json     @default("{}")
+  // Secret holder (token/password/sasl). ENCRYPTED AT REST (TODO-087): an
+  // AES-256-GCM envelope `enc:v1:<iv>.<tag>.<ct>` keyed by FF_SECRET_ENCRYPTION_KEY
+  // (control/src/integrations/secret-crypto.ts). Never returned by the API —
+  // only a `secretSet` flag + a fixed mask; decrypted solely at the point of use
+  // (webhook HMAC signing). Rows written before TODO-087 hold bare plaintext and
+  // are transparently accepted on read, then re-encrypted on the next write.
+  // Empty = no secret set.
+  secret    String?
+  status    String   @default("active") // active | disabled
+  createdBy String   @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([projectId, createdAt])
+  @@schema("control")
+}
+
+// ─── BX-INTEG-5: outbound webhook delivery journal. One row per terminal
+// attempt-chain of the webhook-delivery consumer (BX-INTEG-4): a `success`
+// (2xx received) or a `dead_lettered` (SSRF-blocked target, or retries
+// exhausted). Powers the "Deliveries" panel on a REST integration card
+// (BFF GET /v1/projects/:id/integrations/:integrationId/deliveries, manage-gated).
+// Append-only, best-effort — journaling never blocks or fails a delivery. The
+// HMAC secret and the request/response body are NEVER stored here.
+model WebhookDelivery {
+  id            String   @id
+  projectId     String   @map("project_id")
+  integrationId String   @map("integration_id")
+  eventType     String   @map("event_type")     // routing key, e.g. crm.deal.won
+  url           String                           // delivery endpoint (non-secret)
+  httpCode      Int?     @map("http_code")        // last response status (null = never got one)
+  status        String                           // success | dead_lettered
+  attempts      Int      @default(0)              // POST attempts made (0 = blocked before send)
+  error         String?                           // failure reason (null on success)
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  // Panel query: newest-first within one integration of a project.
+  @@index([projectId, integrationId, createdAt])
+  @@schema("control")
+}
+
+// ─── F3-integ-be (U8/U4): per-project API keys for external access to the
+// project's open methods. The full key is returned ONCE at creation; thereafter
+// only a masked prefix is exposed. We store a sha-256 hash of the key (never the
+// plaintext) plus a short prefix for display. Revoke is soft (revokedAt set).
+model ProjectApiKey {
+  id        String    @id
+  projectId String    @map("project_id")
+  name      String
+  prefix    String    // first chars of the key, shown in lists (e.g. "ffk_ab12")
+  keyHash   String    @map("key_hash") // sha-256(plaintext); plaintext never stored
+  status    String    @default("active") // active | revoked
+  createdBy String    @map("created_by")
+  createdAt DateTime  @default(now()) @map("created_at")
+  lastUsedAt DateTime? @map("last_used_at")
+  revokedAt DateTime? @map("revoked_at")
+
+  @@index([projectId, createdAt])
+  @@index([keyHash])
+  @@schema("control")
+}

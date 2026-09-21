@@ -1,0 +1,300 @@
+syntax = "proto3";
+
+package fairflow.billing.v1;
+
+message Plan {
+  string id = 1;
+  string code = 2;
+  string name = 3;
+  string description = 4;
+  int64 price_minor = 5;
+  string currency = 6;
+  string billing_period = 7;
+  bool is_active = 8;
+  int64 created_at = 9;
+  int64 updated_at = 10;
+}
+
+message PlanQuota {
+  string action = 1;
+  int64 limit = 2;
+}
+
+message Subscription {
+  string id = 1;
+  string project_id = 2;
+  string plan_id = 3;
+  string status = 4;
+  int64 current_period_start = 5;
+  int64 current_period_end = 6;
+  int64 created_at = 7;
+  int64 updated_at = 8;
+}
+
+message Payment {
+  string id = 1;
+  string project_id = 2;
+  string subscription_id = 3;
+  int64 amount_minor = 4;
+  string currency = 5;
+  string status = 6;
+  string provider = 7;
+  string provider_payment_id = 8;
+  int64 paid_at = 9;
+  int64 created_at = 10;
+}
+
+message Invoice {
+  string id = 1;
+  string project_id = 2;
+  string subscription_id = 3;
+  string number = 4;
+  int64 amount_minor = 5;
+  string currency = 6;
+  string status = 7;
+  int64 issued_at = 8;
+  int64 due_at = 9;
+  int64 paid_at = 10;
+  int64 created_at = 11;
+}
+
+message GetPlanRequest {
+  string plan_id = 1;
+  string plan_code = 2;
+}
+
+message ListPlansRequest {
+  bool include_inactive = 1;
+}
+
+message ListPlansResponse {
+  repeated Plan list = 1;
+}
+
+message SubscribeRequest {
+  string project_id = 1;
+  string plan_id = 2;
+}
+
+message SubscribeResponse {
+  Subscription subscription = 1;
+}
+
+message ListPaymentsRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+}
+
+message ListPaymentsResponse {
+  repeated Payment list = 1;
+  int64 total = 2;
+}
+
+message ListInvoicesRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+}
+
+message ListInvoicesResponse {
+  repeated Invoice list = 1;
+  int64 total = 2;
+}
+
+message CheckQuotaRequest {
+  string project_id = 1;
+  string action = 2;
+}
+
+message CheckQuotaResponse {
+  bool allowed = 1;
+  int64 used = 2;
+  int64 limit = 3;
+  int64 remaining = 4;
+  string reason = 5;
+}
+
+// ---- I1a (E3-04): billing <-> modules — paid-module subscriptions, usage,
+// pay-gate. Thin MVP scopes by project_id (current subject; account_ref
+// migration is NFR-BILL-7, deferred). ----
+
+message ModuleSubscription {
+  string id = 1;
+  string project_id = 2;
+  string module_id = 3;
+  string price_model = 4;          // per_seat | flat | usage
+  int64 unit_price_minor = 5;
+  string currency = 6;
+  string state = 7;                // active | trial | grace | overdue | cancelled
+  int32 revenue_share_bps = 8;
+  string partner_id = 9;
+  int64 trial_ends_at = 10;
+  int64 grace_period_end = 11;
+  int64 current_period_start = 12;
+  int64 current_period_end = 13;
+  int64 created_at = 14;
+  int64 updated_at = 15;
+}
+
+message SubscribeModuleRequest {
+  string project_id = 1;
+  string module_id = 2;
+  // price_model/unit_price/revenue_share are read from the module manifest by
+  // billing; the client never sets them (FR-BILL-29). MVP defaults applied.
+  string price_model = 3;
+  int64 unit_price_minor = 4;
+  string currency = 5;
+  int32 revenue_share_bps = 6;
+  int32 trial_days = 7;
+  string partner_id = 8;
+}
+
+message SubscribeModuleResponse {
+  ModuleSubscription subscription = 1;
+}
+
+message UnsubscribeModuleRequest {
+  string project_id = 1;
+  string module_id = 2;
+}
+
+message UnsubscribeModuleResponse {
+  string module_id = 1;
+  string state = 2;
+  int64 effective_at = 3;
+}
+
+message GetModuleSubscriptionsRequest {
+  string project_id = 1;
+}
+
+message GetModuleSubscriptionsResponse {
+  repeated ModuleSubscription list = 1;
+}
+
+message CheckModuleEntitlementRequest {
+  string project_id = 1;
+  string module_id = 2;
+}
+
+message CheckModuleEntitlementResponse {
+  string state = 1;          // active | trial | grace | overdue | not_subscribed
+  bool allow_enable = 2;
+  string reason = 3;
+}
+
+message IncrementUsageRequest {
+  string project_id = 1;
+  string module = 2;
+  string metric = 3;
+  int64 delta = 4;
+  string message_id = 5;     // transport dedup key (idempotencyKey ?? messageId)
+}
+
+message IncrementUsageResponse {
+  bool ok = 1;
+  int64 used = 2;
+  bool deduplicated = 3;
+}
+
+message ModuleStateChange {
+  string id = 1;
+  string project_id = 2;
+  string module_id = 3;
+  string from_state = 4;
+  string to_state = 5;
+  string reason = 6;
+  int64 occurred_at = 7;
+}
+
+message ListAccountStateChangesRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+}
+
+message ListAccountStateChangesResponse {
+  repeated ModuleStateChange list = 1;
+  int64 total = 2;
+}
+
+// ---- P2.e (be-billing-seats): read-side snapshot / usage / org-seat quota.
+// Built ONLY from what billing stores (Subscription + Plan + PlanQuota + the
+// per-period quota_usage counters + module_subscriptions). No new entities. ----
+
+message GetSubscriptionSnapshotRequest {
+  string project_id = 1;
+  // Optional owner/subject ref (org/user). When project_id is empty the snapshot
+  // is resolved against `owner` instead (billing subject is a plain string today,
+  // NFR-BILL-7 account_ref migration deferred).
+  string owner = 2;
+}
+
+// FR-BILL-8/9 — the current-subscription snapshot the FE `SubscriptionView` needs.
+message SubscriptionSnapshot {
+  string state = 1;                     // active | none | <subscription.status>
+  Subscription subscription = 2;        // current active subscription (empty if none)
+  Plan plan = 3;                        // current plan (empty if none)
+  map<string, string> tariff_covers = 4; // plan-quota action -> limit (as string)
+  map<string, bool> booleans = 5;        // plan feature flags (reserved; empty today)
+  map<string, string> module_paid = 6;   // moduleId -> paid-module state
+  int64 seats_total = 7;                 // seat allotment from the plan seats quota
+  bool seats_available = 8;              // seats_total > 0
+  int64 as_of = 9;                       // snapshot instant (ms)
+}
+
+message GetUsageRequest {
+  string project_id = 1;
+}
+
+message UsageQuota {
+  string action = 1;
+  int64 used = 2;
+  int64 limit = 3;
+  int64 remaining = 4;
+}
+
+// FR-BILL-5/11 — per-period usage against the active plan's quotas. Seat usage is
+// owned by control (Employee count), so billing reports seat TOTAL only (used=0).
+message UsageSnapshot {
+  int64 seats_used = 1;      // billing does not own seat usage → 0
+  int64 seats_total = 2;
+  int64 seats_available = 3;
+  repeated UsageQuota quotas = 4;
+  int64 as_of = 5;
+}
+
+message GetOrgSeatQuotaRequest {
+  string organization_id = 1;
+}
+
+// FR-MORG-26 — seat quota for an org. Seats come from the org's active plan's
+// seats quota; with no subscription, the Starter-tier default is returned.
+message OrgSeatQuota {
+  int64 total = 1;
+  string plan = 2;              // plan code
+  bool has_subscription = 3;
+}
+
+service BillingGrpc {
+  rpc GetPlan(GetPlanRequest) returns (Plan);
+  rpc ListPlans(ListPlansRequest) returns (ListPlansResponse);
+  rpc Subscribe(SubscribeRequest) returns (SubscribeResponse);
+  rpc ListPayments(ListPaymentsRequest) returns (ListPaymentsResponse);
+  rpc ListInvoices(ListInvoicesRequest) returns (ListInvoicesResponse);
+  rpc CheckQuota(CheckQuotaRequest) returns (CheckQuotaResponse);
+
+  // I1a (E3-04) — paid-module subscriptions & pay-gate.
+  rpc SubscribeModule(SubscribeModuleRequest) returns (SubscribeModuleResponse);
+  rpc UnsubscribeModule(UnsubscribeModuleRequest) returns (UnsubscribeModuleResponse);
+  rpc GetModuleSubscriptions(GetModuleSubscriptionsRequest) returns (GetModuleSubscriptionsResponse);
+  rpc CheckModuleEntitlement(CheckModuleEntitlementRequest) returns (CheckModuleEntitlementResponse);
+  rpc IncrementUsage(IncrementUsageRequest) returns (IncrementUsageResponse);
+  rpc ListAccountStateChanges(ListAccountStateChangesRequest) returns (ListAccountStateChangesResponse);
+
+  // P2.e (be-billing-seats) — read-side snapshot / usage / org-seat quota.
+  rpc GetSubscriptionSnapshot(GetSubscriptionSnapshotRequest) returns (SubscriptionSnapshot);
+  rpc GetUsage(GetUsageRequest) returns (UsageSnapshot);
+  rpc GetOrgSeatQuota(GetOrgSeatQuotaRequest) returns (OrgSeatQuota);
+}

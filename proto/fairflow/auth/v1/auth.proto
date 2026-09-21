@@ -1,0 +1,461 @@
+syntax = "proto3";
+package fairflow.auth.v1;
+
+message LoginRequest {
+  string identifier = 1;
+  string password = 2;
+  // Device context for the persisted Session (filled by the gateway from the
+  // real client request — user-agent / client IP). Best-effort, never trusted
+  // for authorization.
+  string device_label = 3;
+  string ip = 4;
+}
+message LoginResponse {
+  string access_token = 1;
+  string expires_in = 2;
+  User user = 3;
+  // --- 2FA login challenge (FR-AUTH-10, auth.md §Login TO-BE) ---
+  // When the account has 2FA enabled the first factor (password / OAuth) does NOT
+  // issue a JWT; instead mfa_required=true and a short-lived preauth_id is returned.
+  // The client then calls VerifyMfa(preauth_id, code) to obtain the JWT.
+  bool mfa_required = 4;
+  string preauth_id = 5;
+}
+message User {
+  string id = 1;
+  string login = 2;
+  string email = 3;
+  string name = 4;
+  string avatar_url = 5;
+  string phone = 6;
+  string position = 7;
+  string language = 8;
+  string timezone = 9;
+  string date_format = 10;
+  string time_format = 11;
+  string thousands_separator = 12;
+  string default_deals_view = 13;
+  string default_activities_view = 14;
+  // --- 2FA status (populated by Me; ignored elsewhere) ---
+  bool two_factor_enabled = 15;
+  bool require2fa = 16;             // org/project policy forces 2FA (FR-MPROF-9)
+  int32 backup_codes_remaining = 17;
+  // Foreign-profile projection (FR-MPROF-25): max(Session.lastSeenAt) at level ≥2.
+  string last_active_at = 18;
+  // Pending (unconfirmed) email change, populated by Me only (FR-MPROF-18):
+  // the profile screen shows the banner and the cancel affordance after reload.
+  string pending_email = 19;
+}
+message MeRequest { string user_id = 1; }
+message UpdateMeRequest {
+  string user_id = 1;
+  string name = 2;
+  string avatar_url = 3;
+  string phone = 4;
+  string position = 5;
+  string language = 6;
+  string timezone = 7;
+  string date_format = 8;
+  string time_format = 9;
+  string thousands_separator = 10;
+  string default_deals_view = 11;
+  string default_activities_view = 12;
+}
+message LogoutRequest {
+  string user_id = 1;
+  string session_id = 2; // jti of the session to revoke (the calling session)
+}
+message Empty {}
+
+// --- JTI deny-list (BR-AUTH-09 / FR-MPROF-17a) ---
+// Gateway PEP calls this on authenticated requests to enforce token revocation
+// (logout / revoke-session / password-change). Fail-closed: an unknown or revoked
+// session id resolves to valid=false. Identity sessions live outside x-project-id.
+message ValidateSessionRequest {
+  string user_id = 1;
+  string session_id = 2; // jti carried by the JWT
+}
+message ValidateSessionResponse {
+  bool valid = 1;
+  /** When valid=false: session_revoked | password_changed | signed_out | account_removed | token_expired */
+  string reason = 2;
+}
+
+message RegisterRequest {
+  string user_name = 1;
+  string email = 2;
+  string password = 3;
+}
+
+/** Idempotent provisioning of a user by email (used by invitation accept).
+ *  If a user with that email already exists it is returned unchanged
+ *  (the provided password is ignored — never resets an existing account). */
+message ProvisionUserRequest {
+  string email = 1;
+  string name = 2;
+  string password = 3;
+}
+message ProvisionUserResponse {
+  User user = 1;
+  bool created = 2;
+}
+
+message GetUserByEmailRequest { string email = 1; }
+message GetUserByEmailResponse {
+  bool found = 1;
+  User user = 2;
+}
+
+message ListUsersRequest {
+  int32 skip = 1;
+  int32 take = 2;
+  string login_filter = 3;
+  optional bool is_active = 4;
+}
+message UserListEntry {
+  string id = 1;
+  string login = 2;
+  string email = 3;
+  string name = 4;
+  bool is_active = 5;
+  string created_at = 6;
+}
+message ListUsersResponse {
+  repeated UserListEntry list = 1;
+  int32 total = 2;
+}
+
+// --- profile-module TO-BE: account security & sessions (profile-module/TZ.md §6.3) ---
+
+message ChangePasswordRequest {
+  string user_id = 1;
+  string current_password = 2;
+  string new_password = 3;
+  string current_session_id = 4; // keep this session, revoke the rest (FR-MPROF-7)
+}
+
+message RequestEmailChangeRequest {
+  string user_id = 1;
+  string new_email = 2;
+  string current_password = 3;
+}
+message RequestEmailChangeResponse {
+  // One-time confirmation token for the NEW address (delivery is notification's job).
+  string confirm_token = 1;
+  // Current address — gateway sends a security alert here (FR-MPROF-18).
+  string current_email = 2;
+  // One-shot cancel token for the CURRENT address holder.
+  string cancel_token = 3;
+}
+message CancelEmailChangeRequest { string token = 1; }
+message ConfirmEmailChangeRequest { string token = 1; }
+// Self-service cancel from the profile screen (FR-MPROF-18): subject comes from
+// gateway metadata (x-user-id); body user_id is a hint only (BR-MPROF IDOR rule).
+message CancelMyEmailChangeRequest { string user_id = 1; }
+
+// --- password recovery / email verification (auth.md FR-AUTH-4/5) ---
+// Generic, non-enumerating responses: `found`/`already_verified` let the gateway
+// decide whether to send a letter, but the client always gets a generic 200.
+message RequestPasswordResetRequest { string email = 1; }
+message RequestPasswordResetResponse {
+  bool found = 1;
+  string reset_token = 2; // present only when found (one-time, purpose-scoped, ~1h)
+  string email = 3;
+  string name = 4;
+}
+message ResetPasswordRequest {
+  string token = 1;
+  string new_password = 2;
+}
+message RequestEmailVerificationRequest {
+  string user_id = 1; // signup flow (already resolved actor)
+  string email = 2;   // resend flow (public)
+}
+message RequestEmailVerificationResponse {
+  bool found = 1;
+  bool already_verified = 2;
+  string verify_token = 3; // present only when found & not yet verified (~24h)
+  string email = 4;
+  string name = 5;
+}
+message ConfirmEmailVerificationRequest { string token = 1; }
+message ConfirmEmailVerificationResponse { string user_id = 1; }
+
+// --- 2FA login challenge: second factor verification (auth.md §2fa/verify) ---
+message VerifyMfaRequest {
+  string preauth_id = 1; // short-lived challenge token issued by Login/OauthLogin
+  string code = 2;       // 6-digit TOTP or a one-time backup code
+  string device_label = 3;
+  string ip = 4;
+}
+
+// --- External OAuth/social login (Yandex; identity-auth/TZ.md SSO) ---
+// The gateway performs the provider HTTP exchange (it is the egress point) and
+// passes the resolved identity here to find-or-create a user and issue a session.
+message OauthLoginRequest {
+  string provider = 1;    // e.g. "yandex"
+  string external_id = 2; // provider-side stable user id
+  string email = 3;
+  string name = 4;
+  string avatar_url = 5;
+}
+
+message Init2faRequest {
+  string user_id = 1;
+  string current_password = 2;
+}
+message Init2faResponse {
+  string otpauth_uri = 1; // otpauth://totp/...
+  string secret = 2;      // base32 (shown once to render QR)
+}
+message Enable2faRequest {
+  string user_id = 1;
+  string totp_code = 2;
+}
+message Enable2faResponse { repeated string backup_codes = 1; }
+message Disable2faRequest {
+  string user_id = 1;
+  string current_password = 2;
+  string totp_code = 3;
+}
+message RegenBackupCodesRequest {
+  string user_id = 1;
+  string current_password = 2;
+  string totp_code = 3;
+}
+message BackupCodesResponse { repeated string backup_codes = 1; }
+
+message ListSessionsRequest {
+  string user_id = 1;
+  string current_token_id = 2; // jti of the calling session
+}
+message SessionEntry {
+  string id = 1;
+  string device_label = 2;
+  string ip = 3;
+  string last_seen_at = 4;
+  string created_at = 5;
+  bool is_current = 6;
+}
+message ListSessionsResponse { repeated SessionEntry sessions = 1; }
+message RevokeSessionRequest {
+  string user_id = 1;
+  string session_id = 2;
+  string current_token_id = 3;
+}
+message RevokeOtherSessionsRequest {
+  string user_id = 1;
+  string current_token_id = 2;
+}
+message RevokeCountResponse { int32 revoked = 1; }
+
+// Field-projected foreign-profile view (FR-MPROF-25/25a). Projection runs INSIDE
+// auth from viewer_context; auth never calls control (no ring dependency).
+message ViewerContext {
+  string project_role = 1;  // resolved by gateway from control.ProjectMember
+  string platform_role = 2; // system role (platform_owner/admin)
+  string project_id = 3;
+}
+message ViewerProfileRequest {
+  string target_id = 1;
+  ViewerContext viewer_context = 2;
+}
+
+service AuthGrpc {
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc VerifyMfa(VerifyMfaRequest) returns (LoginResponse);
+  rpc OauthLogin(OauthLoginRequest) returns (LoginResponse);
+  rpc Register(RegisterRequest) returns (LoginResponse);
+  rpc Me(MeRequest) returns (User);
+  rpc UpdateMe(UpdateMeRequest) returns (User);
+  rpc Logout(LogoutRequest) returns (Empty);
+  // JTI deny-list check for the gateway PEP (token revocation enforcement).
+  rpc ValidateSession(ValidateSessionRequest) returns (ValidateSessionResponse);
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+  rpc ProvisionUser(ProvisionUserRequest) returns (ProvisionUserResponse);
+  rpc GetUserByEmail(GetUserByEmailRequest) returns (GetUserByEmailResponse);
+  // profile-module TO-BE
+  rpc ChangePassword(ChangePasswordRequest) returns (Empty);
+  rpc RequestEmailChange(RequestEmailChangeRequest) returns (RequestEmailChangeResponse);
+  rpc ConfirmEmailChange(ConfirmEmailChangeRequest) returns (User);
+  rpc CancelEmailChange(CancelEmailChangeRequest) returns (Empty);
+  rpc CancelMyEmailChange(CancelMyEmailChangeRequest) returns (Empty);
+  // --- password recovery / email verification (auth.md FR-AUTH-4/5) ---
+  // Token delivery (email) is the gateway+notification's job; auth only mints and
+  // validates the one-time purpose-scoped tokens.
+  rpc RequestPasswordReset(RequestPasswordResetRequest) returns (RequestPasswordResetResponse);
+  rpc ResetPassword(ResetPasswordRequest) returns (Empty);
+  rpc RequestEmailVerification(RequestEmailVerificationRequest) returns (RequestEmailVerificationResponse);
+  rpc ConfirmEmailVerification(ConfirmEmailVerificationRequest) returns (ConfirmEmailVerificationResponse);
+  rpc Init2fa(Init2faRequest) returns (Init2faResponse);
+  rpc Enable2fa(Enable2faRequest) returns (Enable2faResponse);
+  rpc Disable2fa(Disable2faRequest) returns (Empty);
+  rpc RegenBackupCodes(RegenBackupCodesRequest) returns (BackupCodesResponse);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc RevokeSession(RevokeSessionRequest) returns (Empty);
+  rpc RevokeOtherSessions(RevokeOtherSessionsRequest) returns (RevokeCountResponse);
+  rpc GetUserProfileForViewer(ViewerProfileRequest) returns (User);
+}
+
+// --- External OIDC SSO — Fairflow as an OIDC/OAuth2 *client* (FR-AUTH-350) ---
+// Corporate SSO login through an external IdP (Keycloak / ADFS / Yandex ID …).
+// Split of responsibilities:
+//   * gateway — owns the public HTTP surface (authorize redirect, callback) and
+//     the provider HTTP exchange (code→token, discovery, JWKS id_token
+//     validation): the gateway is the egress point, auth stays free of external
+//     HTTP (same model as AuthGrpc.OauthLogin).
+//   * auth — owns provider CONFIG (OidcProvider table + OIDC_PROVIDERS env) and
+//     identity resolution: link (issuer, subject) → local User, issue session.
+
+message ListOidcProvidersRequest {}
+/** Public info, safe for the unauthenticated login page. */
+message OidcProviderPublicInfo {
+  string id = 1;
+  string name = 2;
+  string issuer = 3;
+}
+message ListOidcProvidersResponse { repeated OidcProviderPublicInfo providers = 1; }
+
+message GetOidcProviderConfigRequest { string id = 1; }
+/** Full client config INCLUDING client_secret — for the gateway only (trusted
+ *  via the service-API-key layer). Never expose on a public HTTP response. */
+message OidcProviderConfig {
+  string id = 1;
+  string name = 2;
+  string issuer = 3;
+  string client_id = 4;
+  string client_secret = 5;
+  string discovery_url = 6;
+  string authorization_endpoint = 7;
+  string token_endpoint = 8;
+  string user_info_endpoint = 9;
+  string jwks_uri = 10;
+  repeated string scopes = 11;
+  // Treat the provider-asserted email as verified even when the id_token has no
+  // explicit `email_verified: true` claim (IdPs like ADFS omit it). Opt-in via
+  // env `OIDC_PROVIDERS.trustEmail` or admin UI (`OidcProvider.trust_email`).
+  bool trust_email = 12;
+}
+
+/** The gateway has ALREADY validated the id_token (signature via provider JWKS,
+ *  iss, aud, exp, nonce, PKCE on the code exchange) — auth trusts the resolved
+ *  claims, mirroring OauthLogin. Unverified email is rejected again in auth
+ *  (defense in depth against account takeover through email squatting). */
+message OidcLoginRequest {
+  string provider_id = 1;
+  string issuer = 2;        // `iss` claim — identity key together with subject
+  string subject = 3;       // `sub` claim — stable provider-side user id
+  string email = 4;
+  bool email_verified = 5;  // provider claim (or trust_email override)
+  string name = 6;
+  string avatar_url = 7;
+  string device_label = 8;
+  string ip = 9;
+}
+
+/** Admin registry row — no client_secret on list; env providers are read-only. */
+message OidcProviderAdminInfo {
+  string id = 1;
+  string name = 2;
+  string issuer = 3;
+  string client_id = 4;
+  bool is_active = 5;
+  bool from_env = 6;
+  string created_at = 7;
+  string updated_at = 8;
+  string discovery_url = 9;
+  repeated string scopes = 10;
+  bool trust_email = 11;
+}
+message ListOidcProvidersAdminRequest {}
+message ListOidcProvidersAdminResponse {
+  repeated OidcProviderAdminInfo providers = 1;
+}
+message UpsertOidcProviderRequest {
+  string id = 1;
+  string name = 2;
+  string issuer = 3;
+  string client_id = 4;
+  string client_secret = 5;
+  string discovery_url = 6;
+  string authorization_endpoint = 7;
+  string token_endpoint = 8;
+  string user_info_endpoint = 9;
+  string jwks_uri = 10;
+  repeated string scopes = 11;
+  bool is_active = 12;
+  bool trust_email = 13;
+}
+message UpsertOidcProviderResponse {
+  OidcProviderAdminInfo provider = 1;
+}
+message DeactivateOidcProviderRequest { string id = 1; }
+
+/** External-SSO surface for the gateway BFF (same trust model as AuthGrpc). */
+service OidcGrpc {
+  rpc ListProviders(ListOidcProvidersRequest) returns (ListOidcProvidersResponse);
+  rpc GetProviderConfig(GetOidcProviderConfigRequest) returns (OidcProviderConfig);
+  rpc OidcLogin(OidcLoginRequest) returns (LoginResponse);
+  rpc ListProvidersAdmin(ListOidcProvidersAdminRequest) returns (ListOidcProvidersAdminResponse);
+  rpc UpsertProvider(UpsertOidcProviderRequest) returns (UpsertOidcProviderResponse);
+  rpc DeactivateProvider(DeactivateOidcProviderRequest) returns (Empty);
+}
+
+message ValidateServiceApiKeyRequest {
+  string api_key = 1;
+}
+message ValidateServiceApiKeyResponse {
+  bool active = 1;
+  string key_id = 2;
+  repeated string scopes = 3;
+}
+
+message ListServiceApiKeysRequest {}
+message ServiceApiKeyRegistryEntry {
+  string id = 1;
+  string name = 2;
+  string key_prefix = 3;
+  repeated string scopes = 4;
+  string expires_at = 5;
+  string last_used_at = 6;
+  bool is_active = 7;
+  string created_at = 8;
+}
+message ListServiceApiKeysResponse {
+  repeated ServiceApiKeyRegistryEntry keys = 1;
+}
+
+/** Internal: downstream services validate gateway metadata key (no prior auth). */
+service ApiKeyGrpc {
+  rpc ValidateServiceApiKey(ValidateServiceApiKeyRequest) returns (ValidateServiceApiKeyResponse);
+  rpc ListServiceApiKeys(ListServiceApiKeysRequest) returns (ListServiceApiKeysResponse);
+}
+
+// Single-word field names only — case-neutral on the wire, no keepCase coupling.
+message ResolveUsersRequest { repeated string ids = 1; }
+message UserDirectoryEntry {
+  string id = 1;
+  string name = 2;
+  string email = 3;
+  string login = 4;
+  string avatar_url = 5;
+  // FR-ORG-150: job title for colleague directory (internal s2s; gateway strips email).
+  string position = 6;
+}
+message ResolveUsersResponse { repeated UserDirectoryEntry users = 1; }
+
+// Bulk session revocation for internal cascades (org deactivation, FR-MORG-43):
+// mark ALL live sessions of these users revoked so the gateway JTI deny-list
+// (ValidateSession) starts denying their tokens immediately. No session is
+// preserved — this is an admin/cascade path, not a user-initiated logout.
+message RevokeUserSessionsRequest { repeated string user_ids = 1; }
+message RevokeUserSessionsResponse { int32 revoked_count = 1; }
+
+/** Internal directory: resolve user ids → name/email for other services
+ *  (e.g. control's ListMembers). No prior auth — same trust model as ApiKeyGrpc. */
+service UserDirectoryGrpc {
+  rpc ResolveUsers(ResolveUsersRequest) returns (ResolveUsersResponse);
+  // Internal s2s cascade (control's org-deactivation). Revokes every active
+  // session of the given users; returns how many session rows were revoked.
+  rpc RevokeUserSessions(RevokeUserSessionsRequest) returns (RevokeUserSessionsResponse);
+}

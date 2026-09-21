@@ -1,0 +1,496 @@
+syntax = "proto3";
+package fairflow.pipe.v1;
+
+message PipelineStage {
+  string id = 1;
+  string name = 2;
+  string color = 3;
+  int32 order = 4;
+  string kind = 5;          // active | won | lost
+  double probability = 6;
+  int32 rotting_days = 7;
+}
+message PipelineAutoTransition {
+  string from_stage_id = 1;
+  string to_stage_id = 2;
+}
+message Pipeline {
+  string id = 1;
+  string project_id = 2;
+  string name = 3;
+  repeated PipelineStage stages = 4;
+  bool is_default = 5;
+  repeated PipelineAutoTransition auto_transitions = 6;
+}
+message DealSource {
+  string id = 1;
+  string name = 2;
+  string color = 3;
+}
+message Deal {
+  string id = 1;
+  string name = 2;
+  double amount = 3;
+  string currency = 4;
+  string pipeline_id = 5;
+  string stage_id = 6;
+  string stage_name = 7;
+  string contact_id = 8;
+  string contact_name = 9;
+  string company_id = 10;
+  string company_name = 11;
+  string product_id = 12;
+  string product_name = 13;
+  string source = 14;
+  string assignee_id = 15;
+  string assignee_name = 16;
+  int64 expected_close_date = 17;
+  int64 closed_at = 18;
+  string result = 19;
+  string lost_reason = 20;
+  int64 stage_entered_at = 21;
+  int64 created_at = 22;
+  int64 updated_at = 23;
+  // TO-BE fields (deals-module TZ §6)
+  string status = 24;        // open | won | lost
+  int64 won_at = 25;
+  int64 lost_at = 26;
+  string department_id = 27;
+  string light_name = 28;
+  string light_phone = 29;
+  string light_email = 30;
+  string light_company_name = 31;
+  ContactSnapshot contact_snapshot = 32;
+  CompanySnapshot company_snapshot = 33;
+  bool drift_flag = 34;
+  repeated string drift_fields = 35;
+  double probability = 36;
+  repeated string tags = 37;
+  string lost_reason_id = 38;
+  string lost_reason_comment = 39;
+  int64 deleted_at = 40;
+  string deleted_by = 41;
+  // Free-form card notes. The FE has always rendered `deal.notes` (DealInfoWidget)
+  // and posted it on save — the field simply had no place in the contract, so it
+  // never left the gateway and never came back. Non-funnel: editable on a closed deal.
+  string notes = 42;
+  // FR-DEALS-180: computed on read, never stored.
+  int32 days_on_stage = 43;
+  bool is_stalled = 44;
+  int32 stage_return_count = 45;
+  int32 total_time_on_stage_days = 46;
+}
+
+message ContactSnapshot {
+  string name = 1;
+  string phone = 2;
+  string email = 3;
+  int64 linked_at = 4;
+  string linked_by = 5;
+}
+message CompanySnapshot {
+  string name = 1;
+  int64 linked_at = 2;
+  string linked_by = 3;
+  string inn = 4;
+}
+
+message ListPipelinesRequest { string project_id = 1; }
+message ListPipelinesResponse { repeated Pipeline list = 1; }
+message ListDealSourcesRequest { string project_id = 1; }
+message ListDealSourcesResponse { repeated DealSource list = 1; }
+
+message ListDealsRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+  string query = 4;
+  string pipeline_id = 5;
+  string stage_id = 6;
+  string assignee_id = 7;
+  string department_id = 8;
+  string status = 9;
+  string contact_id = 10;
+  string company_id = 11;
+  string source = 12;
+  double amount_min = 13;
+  double amount_max = 14;
+  // TODO-189: корзина сделок. true → выдаются ТОЛЬКО удалённые (deletedAt != null),
+  // false/unset → только живые. Замещающий флаг, а не аддитивный: смешивать живое
+  // с удалённым в одном списке некому. Ответ уже несёт Deal.deleted_at (:66).
+  bool include_deleted = 15;
+  // FR-DEALS-080: minimum days on current stage (server-side filter).
+  int32 stage_days_min = 16;
+  // FR-SEARCH-390/410: без назначенного ответственного (assigneeId пуст).
+  bool without_assignee = 17;
+  // FR-SEARCH-390: wire-alias для stage_days_min (round3-search query name).
+  int32 min_days_on_stage = 18;
+}
+message ListDealsResponse {
+  repeated Deal list = 1;
+  int64 total = 2;
+  // FR-ACCESS-560: project rows hidden by visibility/ABAC (not user filters).
+  int64 hidden_by_policy = 3;
+}
+message GetDealsKanbanRequest {
+  string project_id = 1;
+  string pipeline_id = 2;
+  string query = 3;
+  string assignee_id = 4;
+  string department_id = 5;
+  string status = 6;
+  string contact_id = 7;
+  string company_id = 8;
+  string source = 9;
+  double amount_min = 10;
+  double amount_max = 11;
+  int32 stage_days_min = 12;
+}
+message KanbanColumn {
+  string stage_id = 1;
+  string stage_name = 2;
+  repeated Deal deals = 3;
+  int64 total = 4;
+  bool has_more = 5;
+}
+message GetDealsKanbanResponse {
+  Pipeline pipeline = 1;
+  repeated KanbanColumn columns = 2;
+}
+message GetDealRequest { string project_id = 1; string id = 2; }
+message CreateDealRequest {
+  string project_id = 1;
+  string name = 2;
+  double amount = 3;
+  string currency = 4;
+  string pipeline_id = 5;
+  string stage_id = 6;
+  string contact_id = 7;
+  string company_id = 8;
+  string source = 9;
+  string assignee_id = 10;
+  string product_id = 11;
+  string department_id = 12;
+  int64 expected_close_date = 13;
+  double probability = 14;
+  string light_name = 15;
+  string light_phone = 16;
+  string light_email = 17;
+  string light_company_name = 18;
+  string notes = 19;
+}
+// TODO-385: the clearable fields are `optional` (proto3 field presence). Without
+// presence an empty string on the wire is indistinguishable from "field absent",
+// so the domain's `if (data.x != null)` merge semantics could never receive a
+// "clear this link" instruction — unlinking a contact/company/product/source or
+// wiping notes was impossible through the contract. With presence the domain
+// writes `''` for an explicitly-sent empty value and still ignores absent fields.
+// NOTE: loaders MUST stay without `defaults: true` (pipe/src/main.ts,
+// gateway grpc-bff.module.ts) — defaults would materialize every absent field and
+// destroy the presence signal again.
+message UpdateDealRequest {
+  string project_id = 1;
+  string id = 2;
+  optional string name = 3;
+  optional double amount = 4;
+  optional string pipeline_id = 5;
+  optional string stage_id = 6;
+  optional string contact_id = 7;
+  optional string company_id = 8;
+  optional string assignee_id = 9;
+  optional string department_id = 10;
+  repeated string tags = 11;
+  optional double probability = 12;
+  optional int64 expected_close_date = 13;
+  // GAP-DEALS-140/180 (2nd half): the edit form has always posted these four, the
+  // domain already stored them on create and returns them on read — they were just
+  // missing from the update contract, so changing a product/source/currency/notes
+  // on the card was a silent no-op.
+  optional string product_id = 14;
+  optional string source = 15;
+  optional string currency = 16;
+  optional string notes = 17;
+}
+message DeleteDealRequest { string project_id = 1; string id = 2; }
+message MoveDealStageRequest { string project_id = 1; string deal_id = 2; string stage_id = 3; }
+
+// ---- TO-BE deal lifecycle ----
+message GetDealDriftRequest { string project_id = 1; string id = 2; }
+message DriftEntry {
+  string field = 1;
+  string snapshot_value = 2;
+  string current_value = 3;
+  string changed_by = 4;
+  int64 changed_at = 5;
+}
+message GetDealDriftResponse {
+  string deal_id = 1;
+  repeated DriftEntry drift = 2;
+  bool source_deleted = 3;
+  bool contact_source_deleted = 4;
+  bool company_source_deleted = 5;
+}
+
+message CloseDealRequest {
+  string project_id = 1;
+  string id = 2;
+  string result = 3;                // won | lost
+  string lost_reason_id = 4;
+  string lost_reason_comment = 5;
+}
+message ReopenDealRequest {
+  string project_id = 1;
+  string id = 2;
+  string reason = 3;
+  string target_stage_id = 4;
+}
+// TODO-185: the PII snapshot the gateway resolves for the link must cross the wire.
+// The gateway has always built it and the domain has always expected it, but the
+// field was missing from the contract — protobuf.js silently drops unknown keys,
+// so every link/qualify wrote an EMPTY snapshot and drift detection had nothing
+// to diff against. Separate *Input messages: the response-side ContactSnapshot /
+// CompanySnapshot also carry server-side linked_at/linked_by, which a client must
+// not be able to forge (the domain stamps them itself).
+message ContactSnapshotInput {
+  string name = 1;
+  string phone = 2;
+  string email = 3;
+}
+message CompanySnapshotInput {
+  string name = 1;
+}
+message LinkContactRequest {
+  string project_id = 1;
+  string id = 2;
+  string contact_id = 3;
+  ContactSnapshotInput snapshot = 4;
+}
+message LinkCompanyRequest {
+  string project_id = 1;
+  string id = 2;
+  string company_id = 3;
+  CompanySnapshotInput snapshot = 4;
+}
+message AcceptContactDriftRequest { string project_id = 1; string id = 2; string target = 3; }
+message BulkAcceptDriftRequest {
+  string project_id = 1;
+  repeated string deal_ids = 2;
+  string target = 3;
+}
+message BulkAcceptDriftResponse {
+  repeated string accepted = 1;
+  repeated BulkSkip skipped = 2;
+}
+message RestoreDealRequest { string project_id = 1; string id = 2; }
+
+message BulkChange {
+  string assignee_id = 1;
+  string department_id = 2;
+  string stage_id = 3;
+  string pipeline_id = 4;
+}
+message BulkUpdateDealsRequest {
+  string project_id = 1;
+  repeated string deal_ids = 2;
+  BulkChange change = 3;
+}
+message BulkSkip { string id = 1; string reason = 2; }
+message BulkUpdateDealsResponse {
+  repeated string updated = 1;
+  repeated BulkSkip skipped = 2;
+  bool async = 3;
+  string job_id = 4;
+}
+
+// ---- Pipelines CRUD ----
+message PipelineStageInput {
+  string id = 1;
+  string name = 2;
+  string color = 3;
+  int32 order = 4;
+  string kind = 5;
+  double probability = 6;
+  int32 rotting_days = 7;
+}
+message CreatePipelineRequest {
+  string project_id = 1;
+  string name = 2;
+  bool is_default = 3;
+  int32 debounce_ms = 4;
+  int32 default_rotting_days = 5;
+  repeated PipelineStageInput stages = 6;
+  repeated PipelineAutoTransition auto_transitions = 7;
+}
+message UpdatePipelineRequest {
+  string project_id = 1;
+  string id = 2;
+  string name = 3;
+  bool is_default = 4;
+  int32 debounce_ms = 5;
+  int32 default_rotting_days = 6;
+  repeated PipelineStageInput stages = 7;
+  repeated PipelineAutoTransition auto_transitions = 8;
+}
+message DeletePipelineRequest { string project_id = 1; string id = 2; string move_to_stage_id = 3; }
+message DeletePipelineResponse { bool ok = 1; }
+
+// ---- Deal sources CRUD ----
+message CreateDealSourceRequest { string project_id = 1; string name = 2; string color = 3; }
+message UpdateDealSourceRequest { string project_id = 1; string id = 2; string name = 3; string color = 4; }
+message DeleteDealSourceRequest { string project_id = 1; string id = 2; }
+message DeleteDealSourceResponse { bool ok = 1; }
+
+// ---- Lost reasons CRUD ----
+message LostReason { string id = 1; string name = 2; int32 order = 3; bool active = 4; }
+message ListLostReasonsRequest { string project_id = 1; bool active_only = 2; }
+message ListLostReasonsResponse { repeated LostReason list = 1; }
+message CreateLostReasonRequest { string project_id = 1; string name = 2; int32 order = 3; bool active = 4; }
+message UpdateLostReasonRequest { string project_id = 1; string id = 2; string name = 3; int32 order = 4; bool active = 5; }
+message DeleteLostReasonRequest { string project_id = 1; string id = 2; }
+message DeleteLostReasonResponse { bool ok = 1; }
+
+message DashboardStatistic {
+  string key = 1;
+  string label = 2;
+  double value = 3;
+  double previous_value = 4;
+  double growth_rate = 5;
+}
+message DealsByStagePoint { string stage_id = 1; string stage_name = 2; int32 count = 3; double amount = 4; }
+message TimelinePoint { int64 t = 1; int32 count = 2; double amount = 3; }
+message TopManager { string id = 1; string name = 2; int32 deals_count = 3; double amount = 4; int32 won_count = 5; }
+// Conversion / cycle summary over the [from, to] period (FR-40).
+message DashboardConversion {
+  int32 won_count = 1;
+  int32 lost_count = 2;
+  double conversion_rate = 3;   // won / (won + lost)
+  double won_amount = 4;
+  double avg_cycle_days = 5;    // avg days open→won
+  int32 open_count = 6;
+}
+message GetDashboardRequest {
+  string project_id = 1;
+  int64 from = 2;               // ms; period for won/lost/conversion (0 = all time)
+  int64 to = 3;                 // ms
+  string pipeline_id = 4;       // optional pipeline scope
+}
+
+// enabled_modules: итоговый набор включённых модулей проекта (FR-ONB-7/9). Домен
+// кэширует template_id+enabled_modules локально для ленивого seeding без хопа в control.
+message ProvisionDefaultsRequest { string project_id = 1; string template_id = 2; repeated string enabled_modules = 3; }
+message ProvisionDefaultsResponse { bool created = 1; string pipeline_id = 2; }
+
+// Демо-наполнение проекта (вызывается control'ом после ProvisionDefaults, когда
+// при создании проекта установлен seed_demo_data). pipe владеет общим CRM-Mongo и
+// раскладывает связный набор демо-сущностей ТОЛЬКО по включённым модулям
+// (enabled_modules): сделки/воронка/история — всегда (deals locked), контакты/
+// компании/продукты/продажи/активности — если соответствующий модуль включён.
+// Идемпотентно (детерминированные _id по project_id) и best-effort.
+message SeedDemoDataRequest {
+  string project_id = 1;
+  string owner_id = 2;            // владелец/основной ответственный (assignee)
+  repeated string assignee_ids = 3; // доп. ответственные (для team-разбивки)
+  repeated string enabled_modules = 4;
+}
+message SeedDemoDataResponse {
+  bool seeded = 1;
+  int32 companies = 2;
+  int32 contacts = 3;
+  int32 deals = 4;
+  int32 orders = 5;
+  int32 activities = 6;
+  int32 products = 7;
+}
+message DashboardDepartmentPoint {
+  string department_id = 1;
+  int32 count = 2;
+  double amount = 3;
+}
+message GetDashboardResponse {
+  repeated DashboardStatistic statistics = 1;
+  repeated DealsByStagePoint deals_by_stage = 2;
+  repeated TimelinePoint deals_timeline = 3;
+  repeated TopManager top_managers = 4;
+  repeated Deal recent_deals = 5;
+  DashboardConversion conversion = 6;
+  int64 from = 7;
+  int64 to = 8;
+  int32 stalled_count = 9;
+  double forecast_amount = 10;
+  repeated DashboardDepartmentPoint by_department = 11;
+}
+
+// Cross-domain read-only count (product delete-guard / reconciliation, product.md §3.10).
+// Scoped by project_id (from metadata, S7) — counts ONLY this project's deals.
+message CountDealsByProductRequest { string project_id = 1; string product_id = 2; }
+message CountDealsByProductResponse { int32 count = 1; int32 active_count = 2; }
+
+// --- Document variable provider (documents.md §4) ---
+message ResolveDocumentVariablesRequest {
+  string project_id = 1;
+  string record_id = 2;
+}
+message ResolveDocumentVariablesResponse {
+  map<string, string> values = 1;      // flat key→value, e.g. {"deal.amount":"100500"}
+  string source_hash = 2;              // hash of the requisites (drift detection)
+  repeated string empty_required = 3;  // required variables that resolved empty
+}
+
+// FR-PROJ-215
+message CountMemberOwnedRecordsRequest {
+  string project_id = 1;
+  string user_id = 2;
+}
+message CountMemberOwnedRecordsResponse { int32 count = 1; }
+message ReassignMemberOwnedRecordsRequest {
+  string project_id = 1;
+  string from_user_id = 2;
+  string to_user_id = 3;
+}
+message ReassignMemberOwnedRecordsResponse { int32 reassigned = 1; }
+
+service PipeGrpc {
+  rpc ResolveDocumentVariables(ResolveDocumentVariablesRequest) returns (ResolveDocumentVariablesResponse);
+  rpc ListPipelines(ListPipelinesRequest) returns (ListPipelinesResponse);
+  rpc CountDealsByProduct(CountDealsByProductRequest) returns (CountDealsByProductResponse);
+  rpc ListDealSources(ListDealSourcesRequest) returns (ListDealSourcesResponse);
+  rpc ListDeals(ListDealsRequest) returns (ListDealsResponse);
+  rpc GetDealsKanban(GetDealsKanbanRequest) returns (GetDealsKanbanResponse);
+  rpc GetDeal(GetDealRequest) returns (Deal);
+  rpc CreateDeal(CreateDealRequest) returns (Deal);
+  rpc UpdateDeal(UpdateDealRequest) returns (Deal);
+  rpc DeleteDeal(DeleteDealRequest) returns (Deal);
+  rpc MoveDealToStage(MoveDealStageRequest) returns (Deal);
+  rpc GetDashboard(GetDashboardRequest) returns (GetDashboardResponse);
+  rpc ProvisionDefaults(ProvisionDefaultsRequest) returns (ProvisionDefaultsResponse);
+  rpc SeedDemoData(SeedDemoDataRequest) returns (SeedDemoDataResponse);
+
+  // TO-BE deal lifecycle
+  rpc GetDealDrift(GetDealDriftRequest) returns (GetDealDriftResponse);
+  rpc CloseDeal(CloseDealRequest) returns (Deal);
+  rpc ReopenDeal(ReopenDealRequest) returns (Deal);
+  rpc LinkContact(LinkContactRequest) returns (Deal);
+  rpc LinkCompany(LinkCompanyRequest) returns (Deal);
+  rpc AcceptContactDrift(AcceptContactDriftRequest) returns (Deal);
+  rpc BulkAcceptDrift(BulkAcceptDriftRequest) returns (BulkAcceptDriftResponse);
+  rpc BulkUpdateDeals(BulkUpdateDealsRequest) returns (BulkUpdateDealsResponse);
+  rpc RestoreDeal(RestoreDealRequest) returns (Deal);
+
+  // Pipelines CRUD
+  rpc CreatePipeline(CreatePipelineRequest) returns (Pipeline);
+  rpc UpdatePipeline(UpdatePipelineRequest) returns (Pipeline);
+  rpc DeletePipeline(DeletePipelineRequest) returns (DeletePipelineResponse);
+
+  // Deal sources CRUD
+  rpc CreateDealSource(CreateDealSourceRequest) returns (DealSource);
+  rpc UpdateDealSource(UpdateDealSourceRequest) returns (DealSource);
+  rpc DeleteDealSource(DeleteDealSourceRequest) returns (DeleteDealSourceResponse);
+
+  // Lost reasons CRUD
+  rpc ListLostReasons(ListLostReasonsRequest) returns (ListLostReasonsResponse);
+  rpc CreateLostReason(CreateLostReasonRequest) returns (LostReason);
+  rpc UpdateLostReason(UpdateLostReasonRequest) returns (LostReason);
+  rpc DeleteLostReason(DeleteLostReasonRequest) returns (DeleteLostReasonResponse);
+  rpc CountMemberOwnedRecords(CountMemberOwnedRecordsRequest) returns (CountMemberOwnedRecordsResponse);
+  rpc ReassignMemberOwnedRecords(ReassignMemberOwnedRecordsRequest) returns (ReassignMemberOwnedRecordsResponse);
+}

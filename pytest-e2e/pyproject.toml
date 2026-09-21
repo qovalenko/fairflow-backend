@@ -1,0 +1,38 @@
+[project]
+name = "fairflow-pytest-e2e"
+version = "0.1.0"
+description = "Integration tests for the Fairflow CRM platform: REST through the gateway + direct gRPC into a domain service."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pytest>=8.3",
+    "httpx>=0.28",
+    "grpcio>=1.68",
+    "grpcio-tools>=1.68",
+    "protobuf>=5.28",
+]
+
+[dependency-groups]
+dev = [
+    "pytest-sugar>=1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fairflow_e2e"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `src` holds the helper package; `generated` holds the protoc output (gitignored,
+# produced by `make protos`). Both must be importable without an editable install.
+pythonpath = ["src", "generated"]
+addopts = "-ra --strict-markers"
+markers = [
+    "rest: scenario driven through the public REST surface of the gateway (:3000)",
+    "grpc: scenario that talks gRPC directly to a domain service, bypassing the gateway",
+    "rbac: scenario about the role/permission model (needs a second user on the stand)",
+    "slow: scenario that creates and tears down stand data",
+]

@@ -1,0 +1,192 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  schemas  = ["billing"]
+}
+
+model BillingPlan {
+  id            String               @id
+  code          String               @unique
+  name          String
+  description   String?
+  priceMinor    BigInt               @map("price_minor")
+  currency      String
+  billingPeriod String               @map("billing_period")
+  isActive      Boolean              @default(true) @map("is_active")
+  createdAt     DateTime             @default(now()) @map("created_at")
+  updatedAt     DateTime             @updatedAt @map("updated_at")
+
+  quotas        BillingPlanQuota[]
+  subscriptions BillingSubscription[]
+
+  @@map("plans")
+  @@schema("billing")
+}
+
+model BillingPlanQuota {
+  id         String      @id
+  planId     String      @map("plan_id")
+  action     String
+  limit      BigInt
+  createdAt  DateTime    @default(now()) @map("created_at")
+
+  plan BillingPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, action])
+  @@map("plan_quotas")
+  @@schema("billing")
+}
+
+model BillingSubscription {
+  id                 String           @id
+  projectId          String           @map("project_id")
+  planId             String           @map("plan_id")
+  status             String
+  currentPeriodStart DateTime         @map("current_period_start")
+  currentPeriodEnd   DateTime         @map("current_period_end")
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+
+  plan     BillingPlan       @relation(fields: [planId], references: [id], onDelete: Restrict)
+  payments BillingPayment[]
+  invoices BillingInvoice[]
+
+  @@index([projectId, status])
+  @@map("subscriptions")
+  @@schema("billing")
+}
+
+/// Partial-unique guard (added via migration): at most one `active`
+/// subscription per project. Prisma cannot express a filtered unique index,
+/// so it is created with raw SQL in `20260703000100_billing_one_active_sub`.
+
+model BillingPayment {
+  id                String              @id
+  projectId         String              @map("project_id")
+  subscriptionId    String              @map("subscription_id")
+  amountMinor       BigInt              @map("amount_minor")
+  currency          String
+  status            String
+  provider          String
+  providerPaymentId String?             @map("provider_payment_id")
+  paidAt            DateTime?           @map("paid_at")
+  createdAt         DateTime            @default(now()) @map("created_at")
+
+  subscription BillingSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt(sort: Desc)])
+  @@map("payments")
+  @@schema("billing")
+}
+
+model BillingInvoice {
+  id             String              @id
+  projectId      String              @map("project_id")
+  subscriptionId String              @map("subscription_id")
+  number         String
+  amountMinor    BigInt              @map("amount_minor")
+  currency       String
+  status         String
+  issuedAt       DateTime            @map("issued_at")
+  dueAt          DateTime            @map("due_at")
+  paidAt         DateTime?           @map("paid_at")
+  createdAt      DateTime            @default(now()) @map("created_at")
+
+  subscription BillingSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, number])
+  @@index([projectId, issuedAt(sort: Desc)])
+  @@map("invoices")
+  @@schema("billing")
+}
+
+model BillingQuotaUsage {
+  id          String   @id
+  projectId   String   @map("project_id")
+  action      String
+  periodKey   String   @map("period_key")
+  used        BigInt   @default(0)
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@unique([projectId, action, periodKey])
+  @@index([projectId, action])
+  @@map("quota_usage")
+  @@schema("billing")
+}
+
+/// I1a (E3-04): per-(project, module) paid-module subscription — second
+/// monetization layer (FR-BILL-16/17/18). Thin MVP scopes by `projectId`
+/// (current subject; full `account_ref` migration is NFR-BILL-7, deferred).
+model ModuleSubscription {
+  id                 String    @id
+  projectId          String    @map("project_id")
+  moduleId           String    @map("module_id")
+  priceModel         String    @default("flat") @map("price_model")
+  unitPriceMinor     BigInt    @default(0) @map("unit_price_minor")
+  currency           String    @default("RUB")
+  state              String    @default("active")
+  revenueShareBps    Int       @default(0) @map("revenue_share_bps")
+  partnerId          String?   @map("partner_id")
+  trialEndsAt        DateTime? @map("trial_ends_at")
+  gracePeriodEnd     DateTime? @map("grace_period_end")
+  currentPeriodStart DateTime  @map("current_period_start")
+  currentPeriodEnd   DateTime  @map("current_period_end")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  @@unique([projectId, moduleId])
+  @@index([projectId, state])
+  @@map("module_subscriptions")
+  @@schema("billing")
+}
+
+/// I1a (E3-04): journal of account/module state transitions (FR-BILL-14).
+model AccountStateChange {
+  id         String   @id
+  projectId  String   @map("project_id")
+  scope      String   @default("account")
+  moduleId   String?  @map("module_id")
+  fromState  String   @map("from_state")
+  toState    String   @map("to_state")
+  reason     String
+  occurredAt DateTime @default(now()) @map("occurred_at")
+
+  @@index([projectId, occurredAt(sort: Desc)])
+  @@map("account_state_changes")
+  @@schema("billing")
+}
+
+/// I1a (E3-04): transport dedup for the bus consumer / idempotent IncrementUsage
+/// (NFR-BILL-4, RFC-4 §Р-4). Dedup key = `idempotencyKey ?? messageId`.
+model BillingProcessedMessage {
+  dedupKey    String   @id @map("dedup_key")
+  routingKey  String   @map("routing_key")
+  processedAt DateTime @default(now()) @map("processed_at")
+
+  @@map("processed_messages")
+  @@schema("billing")
+}
+
+/// I1a (E3-04): transactional outbox for `billing.*` emits (E3-01, RFC-4 §Р-1).
+/// Written in the same Prisma tx as the business mutation; a relay pumps rows.
+model BillingEventOutbox {
+  messageId   String    @id @map("message_id")
+  routingKey  String    @map("routing_key")
+  projectId   String?   @map("project_id")
+  status      String    @default("pending")
+  attempts    Int       @default(0)
+  envelope    Json
+  lastError   String?   @map("last_error")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  publishedAt DateTime? @map("published_at")
+
+  @@index([status, createdAt])
+  @@map("event_outbox")
+  @@schema("billing")
+}

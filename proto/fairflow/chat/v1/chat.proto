@@ -1,0 +1,240 @@
+syntax = "proto3";
+package fairflow.chat.v1;
+
+// Chat domain — internal messenger (contracts/chat.md §4, M-CHAT-2).
+// gRPC-only domain; realtime (WS/SSE + presence) is terminated on the gateway
+// via Redis fanout and is NOT a gRPC method of this service (contracts §2.1/§7).
+// keepCase:true + arrays:true on the gateway-loader → fields stay snake_case in
+// JS and empty `repeated` arrive as [] (grpc-bff.module.ts:21,24).
+service ChatService {
+  rpc ListConversations(ListConversationsRequest) returns (ListConversationsResponse);          // FR-CHAT-1,7,15,47
+  rpc GetConversation(GetConversationRequest) returns (Conversation);                            // FR-CHAT-1
+  rpc CreateConversation(CreateConversationRequest) returns (Conversation);                      // FR-CHAT-2,3,4,5
+  rpc UpdateMembers(UpdateMembersRequest) returns (Conversation);                                // FR-CHAT-6
+  rpc TransferOwnership(TransferOwnershipRequest) returns (Conversation);                        // FR-CHAT-8
+  rpc ArchiveConversation(ArchiveConversationRequest) returns (Conversation);                    // FR-CHAT-7
+  rpc SendMessage(SendMessageRequest) returns (Message);                                         // FR-CHAT-10,11,41
+  rpc GetMessages(GetMessagesRequest) returns (GetMessagesResponse);                             // FR-CHAT-12
+  rpc EditMessage(EditMessageRequest) returns (Message);                                         // FR-CHAT-13,15
+  rpc DeleteMessage(DeleteMessageRequest) returns (Message);                                     // FR-CHAT-14,49
+  rpc MarkRead(MarkReadRequest) returns (MarkReadResponse);                                      // FR-CHAT-18
+  rpc MarkAllRead(MarkAllReadRequest) returns (MarkAllReadResponse);                             // FR-CHAT-19
+  rpc GetUnreadCount(GetUnreadCountRequest) returns (GetUnreadCountResponse);                    // FR-CHAT-20
+  rpc GetReadReceipts(GetReadReceiptsRequest) returns (GetReadReceiptsResponse);                 // FR-CHAT-21
+  rpc ListHierarchyChannels(ListHierarchyChannelsRequest) returns (ListConversationsResponse);   // FR-CHAT-48
+  rpc SearchMessages(SearchMessagesRequest) returns (GetMessagesResponse);                       // FR-CHAT-52
+  // chat↔documents membership seam (SEC-C-3): chat is the source of truth for
+  // conversation membership; documents calls this before presigning a download
+  // for a context_type='chat' attachment. Actor = x-user-id, scope = x-project-id
+  // from TRUSTED forwarded gateway metadata (never the body). Returns is_member
+  // false (not an error) for a non-member OR an out-of-scope/unknown conversation,
+  // so the caller can mask existence fail-closed.
+  rpc IsConversationMember(IsConversationMemberRequest) returns (IsConversationMemberResponse);  // FR-CHAT-150/160, SEC-C-3
+}
+
+// Isolation scope: project | org | workspace (scope_id from metadata, never body).
+message Scope {
+  string kind = 1;
+  string scope_id = 2;
+}
+
+message Conversation {
+  string id = 1;
+  string type = 2;                  // dm | group | project_channel
+  Scope scope = 3;
+  string project_id = 4;
+  string title = 5;
+  string avatar_url = 6;
+  string dm_key = 7;
+  string created_by = 8;
+  LastMessage last_message = 9;
+  int64 last_message_at = 10;
+  int32 unread_count = 11;
+  string my_role = 12;              // owner | admin | member
+  int64 archived_at = 13;
+  int64 created_at = 14;
+  int64 updated_at = 15;
+  repeated Member members = 16;
+}
+
+message LastMessage {
+  string id = 1;
+  string text = 2;
+  string sender_id = 3;
+  int64 sent_at = 4;
+  string kind = 5;
+}
+
+message Member {
+  string user_id = 1;
+  string role = 2;
+  int64 joined_at = 3;
+  int64 left_at = 4;
+  int64 last_read_seq = 5;
+}
+
+message Attachment {
+  string document_id = 1;
+  string version_id = 2;
+  string file_name = 3;
+  string mime = 4;
+  int64 size = 5;
+}
+
+/** CRM-ссылка в сообщении (FR-CHAT-440): индексируемое поле, зеркало inline-токена в text. */
+message EntityRef {
+  string type = 1;   // deal | contact | company | order
+  string id = 2;
+  string label = 3;
+}
+
+message Message {
+  string id = 1;
+  string conversation_id = 2;
+  Scope scope = 3;
+  int64 seq = 4;
+  string sender_id = 5;
+  string sender_type = 6;           // user | integration | system
+  string kind = 7;                  // text | system
+  string text = 8;
+  repeated Attachment attachments = 9;
+  repeated string mention_ids = 10;
+  string reply_to_id = 11;
+  string client_message_id = 12;
+  int64 edited_at = 13;
+  int64 deleted_at = 14;
+  string deleted_by = 15;
+  int64 sent_at = 16;
+  int64 created_at = 17;
+  repeated EntityRef entity_refs = 18;
+}
+
+message ListConversationsRequest {
+  Scope scope = 1;
+  bool include_archived = 2;
+  string scope_filter = 3;          // current | all
+}
+message ListConversationsResponse {
+  repeated Conversation conversations = 1;
+}
+
+message GetConversationRequest {
+  string id = 1;
+  Scope scope = 2;
+}
+
+message CreateConversationRequest {
+  string type = 1;                  // dm | group | project_channel
+  Scope scope = 2;
+  string peer_user_id = 3;          // dm
+  string title = 4;                 // group | channel
+  repeated string member_user_ids = 5; // group
+}
+
+message UpdateMembersRequest {
+  string conversation_id = 1;
+  repeated string add = 2;
+  repeated string remove = 3;
+  repeated RoleChange role_changes = 4;
+}
+message RoleChange {
+  string user_id = 1;
+  string role = 2;
+}
+
+message TransferOwnershipRequest {
+  string conversation_id = 1;
+  string new_owner_user_id = 2;
+}
+
+message ArchiveConversationRequest {
+  string conversation_id = 1;
+}
+
+message SendMessageRequest {
+  string conversation_id = 1;
+  string text = 2;
+  string client_message_id = 3;     // uuid, idempotency (FR-CHAT-41)
+  repeated Attachment attachments = 4;
+  repeated string mention_ids = 5;
+  string reply_to_id = 6;
+  string sender_type = 7;           // user (default) | integration | system — set by gateway from actor
+}
+
+message GetMessagesRequest {
+  string conversation_id = 1;
+  int64 before_seq = 2;
+  int32 limit = 3;
+}
+message GetMessagesResponse {
+  repeated Message messages = 1;
+}
+
+message EditMessageRequest {
+  string message_id = 1;
+  string text = 2;
+}
+
+message DeleteMessageRequest {
+  string message_id = 1;
+}
+
+message MarkReadRequest {
+  string conversation_id = 1;
+  int64 upto_seq = 2;
+}
+message MarkReadResponse {
+  int32 unread_count = 1;
+  int32 total_unread = 2;
+}
+
+message MarkAllReadRequest {
+  Scope scope = 1;
+}
+message MarkAllReadResponse {
+  int32 updated = 1;
+  int32 total_unread = 2;
+}
+
+message GetUnreadCountRequest {
+  Scope scope = 1;
+  string scope_filter = 2;          // current | all
+}
+message GetUnreadCountResponse {
+  int32 count = 1;
+  repeated ProjectUnread by_project = 2;
+}
+message ProjectUnread {
+  string project_id = 1;
+  int32 count = 2;
+}
+
+message GetReadReceiptsRequest {
+  string conversation_id = 1;
+  int64 upto_seq = 2;
+}
+message GetReadReceiptsResponse {
+  repeated Member read_by = 1;
+  int32 read_count = 2;
+  int32 total_members = 3;
+  bool aggregate_only = 4;
+}
+
+message ListHierarchyChannelsRequest {
+  repeated string overview_project_ids = 1;
+  repeated string org_roles = 2;
+  repeated string branch_dept_ids = 3;
+}
+
+message SearchMessagesRequest {
+  Scope scope = 1;
+  string query = 2;
+  int32 limit = 3;
+}
+
+message IsConversationMemberRequest {
+  string conversation_id = 1;
+}
+message IsConversationMemberResponse {
+  bool is_member = 1;
+}

@@ -1,0 +1,427 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: fairflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fairflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fairflow}
+      POSTGRES_DB: ${POSTGRES_DB:-fairflow}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    cpus: "1.0"
+    mem_limit: 1g
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fairflow} -d ${POSTGRES_DB:-fairflow}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mongo:
+    image: mongo:8
+    container_name: fairflow-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-fairflow}
+      MONGO_INITDB_DATABASE: ${MONGO_DB:-fairflow}
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    cpus: "1.5"
+    mem_limit: 2g
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: fairflow-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    cpus: "0.5"
+    mem_limit: 512m
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: fairflow-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-fairflow}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-fairflow}
+      RABBITMQ_DEFAULT_VHOST: /
+    ports:
+      - "${RABBITMQ_AMQP_PORT:-5672}:5672"
+      - "${RABBITMQ_HTTP_PORT:-15672}:15672"
+    cpus: "0.75"
+    mem_limit: 1g
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # crm-grpc — только инфра в compose; поднимать локально: npm run start:crm-grpc:dev (из services/)
+  # crm-grpc:
+  #   build:
+  #     context: ..
+  #     dockerfile: docker/Dockerfile.crm-grpc
+  #   container_name: fairflow-crm-grpc
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mongo:
+  #       condition: service_healthy
+  #   environment:
+  #     MONGODB_URI: mongodb://${MONGO_ROOT_USER:-root}:${MONGO_ROOT_PASSWORD:-fairflow}@mongo:27017/${MONGO_DB:-fairflow}?authSource=admin
+  #     GRPC_PIPE_PORT: "5005"
+  #     GRPC_ORDERS_PORT: "5006"
+  #     GRPC_PRODUCT_PORT: "5007"
+  #     GRPC_ACTIVITY_PORT: "5008"
+  #     HTTP_PORT: "3005"
+  #   ports:
+  #     - "5005:5005"
+  #     - "5006:5006"
+  #     - "5007:5007"
+  #     - "5008:5008"
+  #     - "3005:3005"
+
+  minio:
+    image: minio/minio:latest
+    container_name: fairflow-minio
+    restart: unless-stopped
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    cpus: "0.5"
+    mem_limit: 512m
+    volumes:
+      - minio_data:/data
+    # Образ minio/minio включает curl, wget нет — иначе контейнер остаётся "unhealthy" при рабочем S3
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  documents:
+    image: node:22-alpine
+    container_name: fairflow-documents
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      sh -c "npm ci 2>/dev/null || npm install &&
+      npm run build -w @fairflow/shared &&
+      cd documents &&
+      npm run build &&
+      npm run start:prod"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      MONGODB_URI: mongodb://${MONGO_ROOT_USER:-root}:${MONGO_ROOT_PASSWORD:-fairflow}@mongo:27017/${MONGO_DB:-fairflow}?authSource=admin
+      HTTP_PORT: "3010"
+      GRPC_DOCUMENTS_PORT: "5010"
+      AUTH_GRPC_URL: ${AUTH_GRPC_URL:-127.0.0.1:5001}
+      GATEWAY_INBOUND_API_KEY: ${GATEWAY_INBOUND_API_KEY:-dev-gateway-inbound-key}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-fairflow}
+    ports:
+      - "${DOCUMENTS_GRPC_PORT:-5010}:5010"
+      - "${DOCUMENTS_HTTP_PORT:-3010}:3010"
+    volumes:
+      - ..:/app
+    profiles:
+      - apps
+    healthcheck:
+      test: ["CMD", "node", "-e", "const n=require('node:net');const s=n.createConnection({host:'127.0.0.1',port:5010},()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),3000);"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+
+  reports:
+    image: node:22-alpine
+    container_name: fairflow-reports
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      sh -c "npm ci 2>/dev/null || npm install &&
+      npm run build -w @fairflow/shared &&
+      cd reports &&
+      npm run build &&
+      npm run start:prod"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      MONGODB_URI: mongodb://${MONGO_ROOT_USER:-root}:${MONGO_ROOT_PASSWORD:-fairflow}@mongo:27017/${MONGO_DB:-fairflow}?authSource=admin
+      HTTP_PORT: "3011"
+      GRPC_REPORTS_PORT: "5011"
+      AUTH_GRPC_URL: ${AUTH_GRPC_URL:-127.0.0.1:5001}
+      GATEWAY_INBOUND_API_KEY: ${GATEWAY_INBOUND_API_KEY:-dev-gateway-inbound-key}
+    ports:
+      - "${REPORTS_GRPC_PORT:-5011}:5011"
+      - "${REPORTS_HTTP_PORT:-3011}:3011"
+    volumes:
+      - ..:/app
+    profiles:
+      - apps
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3011/readyz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1));"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+
+  automation:
+    image: node:22-alpine
+    container_name: fairflow-automation
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      sh -c "npm ci 2>/dev/null || npm install &&
+      npm run build -w @fairflow/shared &&
+      cd automation &&
+      npm run build &&
+      npm run start:prod"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      MONGODB_URI: mongodb://${MONGO_ROOT_USER:-root}:${MONGO_ROOT_PASSWORD:-fairflow}@mongo:27017/${MONGO_DB:-fairflow}?authSource=admin
+      HTTP_PORT: "3012"
+      GRPC_AUTOMATION_PORT: "5012"
+      AUTH_GRPC_URL: ${AUTH_GRPC_URL:-127.0.0.1:5001}
+      GATEWAY_INBOUND_API_KEY: ${GATEWAY_INBOUND_API_KEY:-dev-gateway-inbound-key}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-fairflow}:${RABBITMQ_PASSWORD:-fairflow}@rabbitmq:5672/
+    ports:
+      - "${AUTOMATION_GRPC_PORT:-5012}:5012"
+      - "${AUTOMATION_HTTP_PORT:-3012}:3012"
+    volumes:
+      - ..:/app
+    profiles:
+      - apps
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3012/readyz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1));"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+
+  search:
+    image: node:22-alpine
+    container_name: fairflow-search
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      sh -c "npm ci 2>/dev/null || npm install &&
+      npm run build -w @fairflow/shared &&
+      cd search &&
+      npm run build &&
+      npm run start:prod"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      MONGODB_URI: mongodb://${MONGO_ROOT_USER:-root}:${MONGO_ROOT_PASSWORD:-fairflow}@mongo:27017/${MONGO_DB:-fairflow}?authSource=admin
+      HTTP_PORT: "3013"
+      GRPC_SEARCH_PORT: "5013"
+      AUTH_GRPC_URL: ${AUTH_GRPC_URL:-127.0.0.1:5001}
+      GATEWAY_INBOUND_API_KEY: ${GATEWAY_INBOUND_API_KEY:-dev-gateway-inbound-key}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-fairflow}:${RABBITMQ_PASSWORD:-fairflow}@rabbitmq:5672/
+    ports:
+      - "${SEARCH_GRPC_PORT:-5013}:5013"
+      - "${SEARCH_HTTP_PORT:-3013}:3013"
+    volumes:
+      - ..:/app
+    profiles:
+      - apps
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3013/readyz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1));"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+
+  audit:
+    image: node:22-alpine
+    container_name: fairflow-audit
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      sh -c "npm ci 2>/dev/null || npm install &&
+      npm run build -w @fairflow/shared &&
+      cd audit &&
+      npm run build &&
+      npm run start:prod"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      MONGODB_URI: mongodb://${MONGO_ROOT_USER:-root}:${MONGO_ROOT_PASSWORD:-fairflow}@mongo:27017/${MONGO_DB:-fairflow}?authSource=admin
+      HTTP_PORT: "3014"
+      GRPC_AUDIT_PORT: "5014"
+      AUTH_GRPC_URL: ${AUTH_GRPC_URL:-127.0.0.1:5001}
+      GATEWAY_INBOUND_API_KEY: ${GATEWAY_INBOUND_API_KEY:-dev-gateway-inbound-key}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-fairflow}:${RABBITMQ_PASSWORD:-fairflow}@rabbitmq:5672/
+    ports:
+      - "${AUDIT_GRPC_PORT:-5014}:5014"
+      - "${AUDIT_HTTP_PORT:-3014}:3014"
+    volumes:
+      - ..:/app
+    profiles:
+      - apps
+    healthcheck:
+      test: ["CMD", "node", "-e", "const n=require('node:net');const s=n.createConnection({host:'127.0.0.1',port:5014},()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),3000);"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+
+  notification:
+    image: node:22-alpine
+    container_name: fairflow-notification
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      sh -c "npm ci 2>/dev/null || npm install &&
+      npm run build -w @fairflow/shared &&
+      cd notification &&
+      npm run build &&
+      npm run start:prod"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      MONGODB_URI: mongodb://${MONGO_ROOT_USER:-root}:${MONGO_ROOT_PASSWORD:-fairflow}@mongo:27017/${MONGO_DB:-fairflow}?authSource=admin
+      HTTP_PORT: "3015"
+      GRPC_NOTIFICATION_PORT: "5015"
+      AUTH_GRPC_URL: ${AUTH_GRPC_URL:-127.0.0.1:5001}
+      GATEWAY_INBOUND_API_KEY: ${GATEWAY_INBOUND_API_KEY:-dev-gateway-inbound-key}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-fairflow}:${RABBITMQ_PASSWORD:-fairflow}@rabbitmq:5672/
+    ports:
+      - "${NOTIFICATION_GRPC_PORT:-5015}:5015"
+      - "${NOTIFICATION_HTTP_PORT:-3015}:3015"
+    volumes:
+      - ..:/app
+    profiles:
+      - apps
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3015/readyz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1));"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+
+  billing:
+    image: node:22-alpine
+    container_name: fairflow-billing
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      sh -c "npm ci 2>/dev/null || npm install &&
+      npm run build -w @fairflow/shared &&
+      cd billing &&
+      npm run build &&
+      npm run start:prod"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      HTTP_PORT: "3016"
+      GRPC_BILLING_PORT: "5016"
+      AUTH_GRPC_URL: ${AUTH_GRPC_URL:-127.0.0.1:5001}
+      GATEWAY_INBOUND_API_KEY: ${GATEWAY_INBOUND_API_KEY:-dev-gateway-inbound-key}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-fairflow}:${POSTGRES_PASSWORD:-fairflow}@postgres:5432/${POSTGRES_DB:-fairflow}?schema=billing
+    ports:
+      - "${BILLING_GRPC_PORT:-5016}:5016"
+      - "${BILLING_HTTP_PORT:-3016}:3016"
+    volumes:
+      - ..:/app
+    profiles:
+      - apps
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3016/readyz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1));"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: fairflow-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    profiles:
+      - observability
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: fairflow-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "${GRAFANA_PORT:-3003}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    profiles:
+      - observability
+
+volumes:
+  postgres_data:
+  mongo_data:
+  redis_data:
+  rabbitmq_data:
+  minio_data:
+  prometheus_data:
+  grafana_data:

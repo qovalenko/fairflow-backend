@@ -1,0 +1,223 @@
+// Auth service: all tables in PostgreSQL schema "auth" (not public)
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  schemas  = ["auth"]
+}
+
+// --- auth schema ---
+
+model User {
+  id            String    @id
+  email         String    @unique
+  login         String    @unique
+  passwordHash  String    @map("password_hash")
+  name          String?
+  avatarUrl     String?   @map("avatar_url")
+  phone         String?
+  position      String?
+  language      String    @default("ru")
+  timezone      String    @default("Europe/Moscow")
+  dateFormat    String    @default("DD.MM.YYYY") @map("date_format")
+  timeFormat    String    @default("24h") @map("time_format")
+  thousandsSeparator String @default("space") @map("thousands_separator")
+  defaultDealsView String @default("kanban") @map("default_deals_view")
+  defaultActivitiesView String @default("list") @map("default_activities_view")
+  isActive      Boolean   @default(true) @map("is_active")
+  emailVerified Boolean   @default(false) @map("email_verified")
+  // --- profile-module / identity-auth TO-BE (profile-module/TZ.md §5.1) ---
+  twoFactorEnabled       Boolean   @default(false) @map("two_factor_enabled")
+  twoFactorSecret        String?   @map("two_factor_secret")          // AES-256-GCM at rest (AUTH_2FA_KEY)
+  twoFactorPendingSecret String?   @map("two_factor_pending_secret")  // pending init, not yet enabled
+  twoFactorEnabledAt     DateTime? @map("two_factor_enabled_at")
+  pendingEmail           String?   @map("pending_email")              // new email awaiting confirmation
+  passwordChangedAt      DateTime? @map("password_changed_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  sessions           Session[]
+  refreshTokens      RefreshToken[]
+  authorizationCodes AuthorizationCode[]
+  userConsents       UserClientConsent[]
+  backupCodes        UserBackupCode[]
+  oidcIdentities     UserOidcIdentity[]
+
+  @@schema("auth")
+}
+
+// OIDC/SSO (FR-AUTH-350): link between a local User and an external IdP identity.
+// Identity key is (issuer, subject) — stable even if the email changes on either
+// side; `email` is the last provider-asserted (verified) email, for audit only.
+model UserOidcIdentity {
+  id        String   @id
+  userId    String   @map("user_id")
+  issuer    String
+  subject   String
+  email     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([issuer, subject])
+  @@index([userId])
+  @@schema("auth")
+}
+
+/** One-time TOTP backup codes (profile-module/TZ.md §5.2). Hashed, single-use. */
+model UserBackupCode {
+  id        String    @id
+  userId    String    @map("user_id")
+  codeHash  String    @map("code_hash")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@schema("auth")
+}
+
+model Session {
+  id        String   @id
+  userId    String   @map("user_id")
+  clientId  String?  @map("client_id")
+  tokenId   String?  @map("token_id")
+  ip        String?
+  userAgent String?  @map("user_agent")
+  // --- profile-module TO-BE (profile-module/TZ.md §5.3) ---
+  refreshTokenId String?   @map("refresh_token_id")
+  deviceLabel    String?   @map("device_label")
+  lastSeenAt     DateTime? @map("last_seen_at")
+  revokedAt      DateTime? @map("revoked_at")
+  revokedReason  String?   @map("revoked_reason")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  client OAuth2Client? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([userId, revokedAt])
+  @@index([lastSeenAt])
+  @@schema("auth")
+}
+
+model OAuth2Client {
+  id            String   @id
+  clientId      String   @unique @map("client_id")
+  clientSecret  String?  @map("client_secret")
+  name          String
+  redirectUris  String[] @map("redirect_uris")
+  grantTypes    String[] @map("grant_types")
+  scopes        String[] @default([])
+  isPublic      Boolean  @default(false) @map("is_public")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  authorizationCodes AuthorizationCode[]
+  refreshTokens      RefreshToken[]
+  apiKeys            ApiKey[]
+  sessions           Session[]
+  userConsents       UserClientConsent[]
+
+  @@schema("auth")
+}
+
+model AuthorizationCode {
+  id          String   @id
+  code        String   @unique
+  clientId    String   @map("client_id")
+  userId      String   @map("user_id")
+  redirectUri String   @map("redirect_uri")
+  scopes      String[]
+  codeChallenge       String?  @map("code_challenge")
+  codeChallengeMethod String?  @map("code_challenge_method")
+  expiresAt   DateTime @map("expires_at")
+  usedAt      DateTime? @map("used_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  client OAuth2Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([code])
+  @@index([expiresAt])
+  @@schema("auth")
+}
+
+model RefreshToken {
+  id         String    @id
+  tokenHash  String    @unique @map("token_hash")
+  clientId   String    @map("client_id")
+  userId     String    @map("user_id")
+  scopes     String[]
+  expiresAt  DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  client OAuth2Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
+  @@index([expiresAt])
+  @@schema("auth")
+}
+
+model ApiKey {
+  id          String   @id
+  keyHash     String   @unique @map("key_hash")
+  keyPrefix   String   @map("key_prefix")
+  name        String
+  clientId    String?  @map("client_id")
+  scopes      String[] @default([])
+  expiresAt   DateTime? @map("expires_at")
+  lastUsedAt DateTime? @map("last_used_at")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  client OAuth2Client? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+
+  @@index([keyHash])
+  @@index([keyPrefix])
+  @@schema("auth")
+}
+
+model UserClientConsent {
+  userId    String   @map("user_id")
+  clientId  String   @map("client_id")
+  scopes    String[]
+  grantedAt DateTime @default(now()) @map("granted_at")
+
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  client OAuth2Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@id([userId, clientId])
+  @@schema("auth")
+}
+
+// OIDC/SSO: external IdP config (for connecting SSO)
+model OidcProvider {
+  id              String   @id
+  issuer          String   @unique
+  name            String
+  clientId        String   @map("client_id")
+  clientSecret    String   @map("client_secret")
+  discoveryUrl    String?  @map("discovery_url")
+  authorizationEndpoint String? @map("authorization_endpoint")
+  tokenEndpoint   String?  @map("token_endpoint")
+  userInfoEndpoint String? @map("user_info_endpoint")
+  jwksUri         String?  @map("jwks_uri")
+  scopes          String[] @default(["openid", "profile", "email"])
+  trustEmail      Boolean  @default(false) @map("trust_email")
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@schema("auth")
+}

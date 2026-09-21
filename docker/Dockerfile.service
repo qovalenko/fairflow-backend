@@ -1,0 +1,32 @@
+FROM node:22-alpine
+
+WORKDIR /app
+
+ARG SERVICE
+ARG DATABASE_URL
+ARG DIRECT_URL
+
+ENV NODE_ENV=production
+ENV DATABASE_URL=${DATABASE_URL}
+ENV DIRECT_URL=${DIRECT_URL}
+
+# Whole monorepo (node_modules excluded via .dockerignore; service dist comes from the build artifact).
+# All workspace package.json must be present BEFORE npm ci so workspace deps (e.g. @nestjs/*) install.
+COPY . .
+COPY proto ./${SERVICE}/proto
+# resilient install — npm registry CDN is intermittently flaky from this network
+RUN npm config set fetch-retries 6 \
+ && npm config set fetch-retry-mintimeout 20000 \
+ && npm config set fetch-retry-maxtimeout 180000 \
+ && npm config set fetch-timeout 600000 \
+ && for i in 1 2 3 4 5 6; do npm ci --omit=dev && break || { echo "npm ci retry $i"; sleep 5; }; done
+
+WORKDIR /app/${SERVICE}
+
+# commit provenance for /status.commit — placed late so it never invalidates the install layers above
+ARG GIT_COMMIT=""
+ARG IMAGE_TAG=""
+ENV GIT_COMMIT=${GIT_COMMIT} \
+    IMAGE_TAG=${IMAGE_TAG}
+
+CMD ["npm", "run", "start:prod"]

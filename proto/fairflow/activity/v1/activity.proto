@@ -1,0 +1,254 @@
+syntax = "proto3";
+package fairflow.activity.v1;
+
+// Polymorphic link to a CRM entity (deal|order|contact|company). The name
+// snapshot is denormalized by the domain; `orphaned` is set when the target was
+// deleted/transferred (drift listener — TO-BE outbox E3).
+message ActivityLink {
+  string entity_type = 1;
+  string entity_id = 2;
+  string name_snapshot = 3;
+  bool orphaned = 4;
+}
+
+message Activity {
+  string id = 1;
+  string type = 2;
+  string title = 3;
+  string description = 4;
+  string status = 5;
+  string priority = 6;
+  // proto3 field-presence (optional) so "no date" is distinguishable from 0.
+  optional int64 due_date = 7;
+  optional int64 start_date = 8;
+  optional int64 end_date = 9;
+  string assignee_id = 10;
+  string assignee_name = 11;
+  // Deprecated flat links — kept as a BFF bridge until M6 (zero traffic).
+  string deal_id = 12;
+  string deal_name = 13;
+  string contact_id = 14;
+  string contact_name = 15;
+  string company_id = 16;
+  string company_name = 17;
+  string order_id = 18;
+  string order_name = 19;
+  string location = 20;
+  string direction = 21;
+  string result = 22;
+  optional int32 duration = 23;
+  bool overdue = 24;
+  int64 created_at = 25;
+  int64 updated_at = 26;
+  // TO-BE fields (§6.2).
+  bool all_day = 27;
+  optional int32 actual_duration = 28;
+  repeated string participants = 29;
+  string created_by = 30;
+  repeated ActivityLink links = 31;
+  string reminder_offset = 32;
+  optional int64 reminder_fire_at = 33;
+  string reminder_state = 34;
+  optional int64 completed_at = 35;
+  optional int64 deleted_at = 36;
+  // FR-MAUT-36 / FR-AUTOM-120 — provenance when created by an automation rule.
+  CreatedByRule created_by_rule = 37;
+  // FIELD-ACT-departmentId (W-6): подразделение-владелец активности. Второй ключ
+  // видимости рядом с assignee_id (buildOwnableVisibilityFilter). Пусто = не задано.
+  string department_id = 38;
+}
+
+message CreatedByRule {
+  string rule_id = 1;
+  string name = 2;
+}
+
+message ListActivitiesRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+  string query = 4;
+  bool overdue_only = 5;
+  string assignee_id = 6;
+  optional int64 date_from = 7;
+  optional int64 date_to = 8;
+  string type = 9;
+  string link_entity_type = 10;
+  string link_entity_id = 11;
+  bool include_deleted = 12;
+  string status = 13;
+  repeated string types = 14;
+  string sort_field = 15;
+  string sort_order = 16;
+  // FIELD-ACT-departmentId (W-6): срез списка по подразделению-владельцу.
+  // Пусто = фильтр не задан (сужение поверх видимости, не вместо неё).
+  string department_id = 17;
+  // FR-SEARCH-410: активности без назначенного ответственного (assigneeId пуст).
+  bool without_assignee = 18;
+}
+message ListActivitiesResponse { repeated Activity list = 1; int64 total = 2; }
+
+// GET /activities/trash — только удалённые (activity trash-listing, честный total).
+message ListTrashRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+  string query = 4;
+}
+
+message CountOverdueRequest {
+  string project_id = 1;
+  string assignee_id = 2;
+}
+message CountOverdueResponse { int64 count = 1; }
+
+message ListActivitiesCalendarRequest {
+  string project_id = 1;
+  string type = 2;
+  string mine = 3;
+  string link_entity_id = 4;
+  optional int64 date_from = 5;
+  optional int64 date_to = 6;
+}
+message CalendarEvent {
+  string id = 1;
+  string title = 2;
+  int64 start = 3;
+  int64 end = 4;
+  bool all_day = 5;
+  string color = 6;
+  string type = 7;
+  bool overdue = 8;
+}
+message ListActivitiesCalendarResponse { repeated CalendarEvent events = 1; }
+
+message GetActivityRequest { string project_id = 1; string id = 2; }
+
+message ActivityLinkInput {
+  string entity_type = 1;
+  string entity_id = 2;
+}
+
+message CreateActivityRequest {
+  string project_id = 1;
+  string type = 2;
+  string title = 3;
+  string description = 4;
+  string status = 5;
+  string priority = 6;
+  optional int64 due_date = 7;
+  string assignee_id = 8;
+  // Deprecated flat links (BFF bridge → links).
+  string contact_id = 9;
+  string company_id = 10;
+  string deal_id = 11;
+  string order_id = 12;
+  optional int64 start_date = 13;
+  optional int64 end_date = 14;
+  bool all_day = 15;
+  string direction = 16;
+  optional int32 duration = 17;
+  string location = 18;
+  repeated string participants = 19;
+  repeated ActivityLinkInput links = 20;
+  string reminder_offset = 21;
+  bool has_due_date = 22;
+  CreatedByRule created_by_rule = 23;
+  // FIELD-ACT-departmentId (W-6): подразделение-владелец. Домен проверяет id по
+  // составу подразделений организации проекта; пусто = поле не задано.
+  string department_id = 24;
+}
+message UpdateActivityRequest {
+  string project_id = 1;
+  string id = 2;
+  optional string title = 3;
+  optional string description = 4;
+  optional string status = 5;
+  optional string priority = 6;
+  optional int64 due_date = 7;
+  optional string assignee_id = 8;
+  optional int64 start_date = 9;
+  optional int64 end_date = 10;
+  optional bool all_day = 11;
+  optional string direction = 12;
+  optional int32 duration = 13;
+  optional string location = 14;
+  repeated string participants = 15;
+  repeated ActivityLinkInput links = 16;
+  bool has_links = 17;
+  optional string reminder_offset = 18;
+  // 'manage' verdict resolved at the gateway (caller may mutate others' records).
+  bool can_manage = 19;
+  // FIELD-ACT-departmentId (W-6): optional — proto3 field-presence отличает
+  // «не прислали» от «прислали пусто» (снятие подразделения).
+  optional string department_id = 20;
+}
+
+message CompleteActivityRequest {
+  string project_id = 1;
+  string id = 2;
+  string result = 3;
+  optional int32 actual_duration = 4;
+  optional int64 completed_at = 5;
+  bool can_manage = 6;
+}
+message DeleteActivityRequest {
+  string project_id = 1;
+  string id = 2;
+  bool can_manage = 3;
+}
+message RestoreActivityRequest {
+  string project_id = 1;
+  string id = 2;
+  bool can_manage = 3;
+}
+message Empty {}
+
+// FR-PROJ-215
+message CountMemberOwnedRecordsRequest {
+  string project_id = 1;
+  string user_id = 2;
+}
+message CountMemberOwnedRecordsResponse { int32 count = 1; }
+message ReassignMemberOwnedRecordsRequest {
+  string project_id = 1;
+  string from_user_id = 2;
+  string to_user_id = 3;
+}
+message ReassignMemberOwnedRecordsResponse { int32 reassigned = 1; }
+
+// Internal s2s — notification scheduler claims reminder delivery (FR-ACTIVITIES-070/310).
+message ClaimReminderFireRequest {
+  string project_id = 1;
+  string activity_id = 2;
+  int64 fire_at = 3;
+}
+message ClaimReminderFireResponse {
+  bool claimed = 1;
+  Activity activity = 2;
+}
+message ReleaseReminderFireRequest {
+  string project_id = 1;
+  string activity_id = 2;
+  int64 fire_at = 3;
+}
+message ReleaseReminderFireResponse {
+  bool released = 1;
+}
+
+service ActivityGrpc {
+  rpc ListActivities(ListActivitiesRequest) returns (ListActivitiesResponse);
+  rpc ListTrash(ListTrashRequest) returns (ListActivitiesResponse);
+  rpc CountOverdue(CountOverdueRequest) returns (CountOverdueResponse);
+  rpc ListActivitiesCalendar(ListActivitiesCalendarRequest) returns (ListActivitiesCalendarResponse);
+  rpc GetActivity(GetActivityRequest) returns (Activity);
+  rpc CreateActivity(CreateActivityRequest) returns (Activity);
+  rpc UpdateActivity(UpdateActivityRequest) returns (Activity);
+  rpc CompleteActivity(CompleteActivityRequest) returns (Activity);
+  rpc DeleteActivity(DeleteActivityRequest) returns (Empty);
+  rpc RestoreActivity(RestoreActivityRequest) returns (Activity);
+  rpc CountMemberOwnedRecords(CountMemberOwnedRecordsRequest) returns (CountMemberOwnedRecordsResponse);
+  rpc ReassignMemberOwnedRecords(ReassignMemberOwnedRecordsRequest) returns (ReassignMemberOwnedRecordsResponse);
+  rpc ClaimReminderFire(ClaimReminderFireRequest) returns (ClaimReminderFireResponse);
+  rpc ReleaseReminderFire(ReleaseReminderFireRequest) returns (ReleaseReminderFireResponse);
+}

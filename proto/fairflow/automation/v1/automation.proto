@@ -1,0 +1,476 @@
+syntax = "proto3";
+package fairflow.automation.v1;
+
+message AutomationRule {
+  string id = 1;
+  string project_id = 2;
+  string name = 3;
+  string description = 4;
+  optional bool enabled = 5;
+  string trigger_type = 6;
+  string trigger_config_json = 7;
+  string conditions_json = 8;
+  string actions_json = 9;
+  int64 created_at = 10;
+  int64 updated_at = 11;
+  int64 last_executed_at = 12;
+  // TO-BE fields (contract §5.1)
+  string state = 13; // enabled|disabled|frozen|unexecutable
+  int32 priority = 14;
+  string created_by = 15;
+  string notify_on_failure = 16;
+  bool unexecutable = 17;
+  string stats_json = 18;
+  // v2 graph (automation-v2 contract §2.2) — additive, wire-compatible.
+  int32 engine_version = 19;   // 1 (or 0/absent) = v1 flat; 2 = graph
+  string graph_json = 20;      // serialized GraphSpec (only engine_version=2)
+  string graph_hash = 21;      // sha256 of normalized graph_json (dedup/cache)
+  string disabled_reason = 22;   // actor_inactive|… when auto-disabled
+  int64 deleted_at = 23;       // soft-delete marker (0 = active)
+}
+
+// ── automation-v2 graph (engine_version=2) — contract §2.1 ─────────────────
+message NodeSpec {
+  string id = 1;
+  string type = 2;             // trigger|condition|branch|action
+  double position_x = 3;       // canvas coords (UI-only)
+  double position_y = 4;
+  string config_json = 5;      // JSON config of the node (§1.4)
+}
+
+message EdgeSpec {
+  string id = 1;
+  string source = 2;
+  string source_handle = 3;    // out|true|false|case:<key>|else
+  string target = 4;
+  string target_handle = 5;    // 'in' (reserved)
+}
+
+message GraphSpec {
+  int32 version = 1;           // graph schema version (=2)
+  repeated NodeSpec nodes = 2;
+  repeated EdgeSpec edges = 3;
+  string viewport_json = 4;    // {x,y,zoom} — UI-only
+}
+
+message GraphValidationIssue {
+  string code = 1;             // CYCLE|NO_TRIGGER|MULTIPLE_TRIGGERS|DANGLING_NODE|...
+  string node_id = 2;          // '' if graph-wide
+  string edge_id = 3;
+  string message = 4;
+  string severity = 5;         // error|warning
+}
+
+message NodeTypeDef {
+  string type = 1;             // trigger|condition|branch|action
+  string subtype = 2;          // trigger_id / action_id; '' for structural
+  string required_module = 3;
+  bool external_effect = 4;    // action only
+  string entity_type = 5;      // trigger only
+  string config_schema_json = 6;
+  string output_schema_json = 7; // trigger only
+  repeated string out_handles = 8;
+}
+
+message RuleExecution {
+  string execution_id = 1;
+  string rule_id = 2;
+  string project_id = 3;
+  string status = 4;
+  string source = 5;
+  string payload_json = 6;
+  string result_json = 7;
+  int64 created_at = 8;
+  // TO-BE fields (contract §5.2)
+  string skip_reason = 9;
+  string trigger_event_name = 10;
+  string entity_type = 11;
+  string entity_id = 12;
+  string idempotency_key = 13;
+  string trace_id = 14;
+  string causation_id = 15;
+  string action_results_json = 16;
+  bool dry_run = 17;
+  int64 finished_at = 18;
+  // v2: visited node ids for canvas trace (FR-AUTOM-530).
+  string graph_path_json = 19;
+}
+
+message Connection {
+  string id = 1;
+  string project_id = 2;
+  string name = 3;
+  string url = 4;
+  string headers_json = 5;
+  bool enabled = 6;
+  bool secret_set = 7;
+  string breaker_state = 8;
+  int32 breaker_failures = 9;
+  string created_by = 10;
+  int64 created_at = 11;
+  int64 updated_at = 12;
+}
+
+message DlqItem {
+  string id = 1;
+  string project_id = 2;
+  string execution_id = 3;
+  string rule_id = 4;
+  int32 action_index = 5;
+  string action_type = 6;
+  string connection_id = 7;
+  string status = 8;
+  int32 attempts = 9;
+  string last_error = 10;
+  int32 last_http_code = 11;
+  int64 next_retry_at = 12;
+  int64 created_at = 13;
+  int64 updated_at = 14;
+  // TODO-041: attempt cap the background auto-retry honours. `attempts` counts
+  // every dispatch including the first; once it reaches this, the row goes
+  // terminal `exhausted` instead of spinning on the backoff ladder forever.
+  int32 max_attempts = 15;
+}
+
+message ListRulesRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+  string query = 4;
+  bool enabled_only = 5;
+  string state = 6;
+  string trigger_type = 7;
+  string created_by = 8;
+  // 0 = all, 1 = v1 flat only, 2 = graph v2 only (FR-AUTOM-540).
+  int32 engine_version = 9;
+}
+
+message ListRulesResponse {
+  repeated AutomationRule list = 1;
+  int64 total = 2;
+}
+
+message GetRuleRequest {
+  string project_id = 1;
+  string rule_id = 2;
+}
+
+message CreateRuleRequest {
+  string project_id = 1;
+  string name = 2;
+  string description = 3;
+  bool enabled = 4;
+  string trigger_type = 5;
+  string trigger_config_json = 6;
+  string conditions_json = 7;
+  string actions_json = 8;
+  // v2 (additive): when engine_version=2 the graph is the source of truth and
+  // trigger_type/trigger_config_json are denormalized from it (§2.2).
+  int32 engine_version = 9;
+  GraphSpec graph = 10;
+  string created_by = 11;
+  // 'manage' verdict resolved at the gateway — gates external-effect action
+  // nodes (§3.3). Read fail-closed in the domain: absent = no manage.
+  bool can_manage = 12;
+  int32 priority = 13;
+  string notify_on_failure = 14;
+  repeated string enabled_modules = 15;
+}
+
+message UpdateRuleRequest {
+  string project_id = 1;
+  string rule_id = 2;
+  string name = 3;
+  string description = 4;
+  bool enabled = 5;
+  string trigger_type = 6;
+  string trigger_config_json = 7;
+  string conditions_json = 8;
+  string actions_json = 9;
+  // v2 (additive).
+  int32 engine_version = 10;
+  GraphSpec graph = 11;
+  bool can_manage = 12;
+  optional int32 priority = 13;
+  optional string notify_on_failure = 14;
+  repeated string enabled_modules = 15;
+}
+
+message DeleteRuleRequest {
+  string project_id = 1;
+  string rule_id = 2;
+}
+
+message RestoreRuleRequest {
+  string project_id = 1;
+  string rule_id = 2;
+}
+
+message ExecuteRuleRequest {
+  string project_id = 1;
+  string rule_id = 2;
+  string source = 3;
+  string payload_json = 4;
+}
+
+message HookEventRequest {
+  string project_id = 1;
+  string event_name = 2;
+  string payload_json = 3;
+  string source = 4;
+}
+
+message HookEventResponse {
+  bool accepted = 1;
+  int32 matched_rules = 2;
+  repeated RuleExecution executions = 3;
+}
+
+message EmptyResponse {}
+
+// 3.6 SetRuleEnabled
+message SetRuleEnabledRequest {
+  string project_id = 1;
+  string rule_id = 2;
+  bool enabled = 3;
+  // Gateway PEP: `automation:manage` verdict for external-effect enable gate.
+  bool can_manage = 4;
+}
+
+// 3.8 ManualRun
+message ManualRunRequest {
+  string project_id = 1;
+  string rule_id = 2;
+  string entity_type = 3;
+  string entity_id = 4;
+}
+
+// 3.9 DryRun
+message DryRunRequest {
+  string project_id = 1;
+  string rule_id = 2;
+  string sample_json = 3;
+  int32 last_n = 4;
+}
+message DryRunActionResult {
+  string type = 1;
+  bool would_run = 2;
+  string reason = 3;
+}
+message DryRunResult {
+  string event_name = 1;
+  bool matched = 2;
+  bool conditions_passed = 3;
+  repeated DryRunActionResult actions = 4;
+  bool dry_run = 5;
+}
+message DryRunResponse {
+  repeated DryRunResult results = 1;
+}
+
+// 3.10 ListExecutions (per rule)
+message ListExecutionsRequest {
+  string project_id = 1;
+  string rule_id = 2;
+  int32 page_index = 3;
+  int32 page_size = 4;
+  string status = 5;
+}
+message ListExecutionsResponse {
+  repeated RuleExecution list = 1;
+  int64 total = 2;
+}
+
+// 3.11 ListProjectExecutions
+message ListProjectExecutionsRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+  string status = 4; // CSV
+  string action_type = 5;
+  int64 from = 6;
+  int64 to = 7;
+  string rule_id = 8;
+  string entity_type = 9;
+  string entity_id = 10;
+}
+
+// 3.12 GetRegistry
+message GetRegistryRequest {
+  string project_id = 1;
+  repeated string enabled_modules = 2;
+}
+message TriggerDef {
+  string id = 1;
+  string required_module = 2;
+  string entity_type = 3;
+  string event_name = 4;
+  string config_schema_json = 5;
+  string output_schema_json = 6;
+}
+message ActionDef {
+  string id = 1;
+  string required_module = 2;
+  bool external_effect = 3;
+  string config_schema_json = 4;
+}
+message GetRegistryResponse {
+  repeated TriggerDef triggers = 1;
+  repeated ActionDef actions = 2;
+}
+
+// ── automation-v2 RPC payloads (contract §2.3) ─────────────────────────────
+message ValidateGraphRequest {
+  string project_id = 1;
+  GraphSpec graph = 2;
+  bool can_manage = 3;
+  repeated string enabled_modules = 4;
+}
+message ValidateGraphResponse {
+  bool valid = 1;
+  repeated GraphValidationIssue issues = 2;
+}
+
+message GetNodeRegistryRequest {
+  string project_id = 1;
+  repeated string enabled_modules = 2;
+}
+message GetNodeRegistryResponse {
+  repeated NodeTypeDef triggers = 1;
+  repeated NodeTypeDef actions = 2;
+  repeated NodeTypeDef structural = 3; // condition/branch
+}
+
+// 3.13-3.17 Connections
+message ListConnectionsRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+}
+message ListConnectionsResponse {
+  repeated Connection list = 1;
+  int64 total = 2;
+}
+message GetConnectionRequest {
+  string project_id = 1;
+  string connection_id = 2;
+}
+message CreateConnectionRequest {
+  string project_id = 1;
+  string name = 2;
+  string url = 3;
+  string secret = 4;
+  string headers_json = 5;
+  bool enabled = 6;
+  string created_by = 7;
+}
+message UpdateConnectionRequest {
+  string project_id = 1;
+  string connection_id = 2;
+  string name = 3;
+  string url = 4;
+  string secret = 5;
+  string headers_json = 6;
+  bool enabled = 7;
+  bool reset_breaker = 8;
+}
+message DeleteConnectionRequest {
+  string project_id = 1;
+  string connection_id = 2;
+}
+
+// 3.18-3.20 DLQ
+message ListDlqRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+  string status = 4;
+}
+message ListDlqResponse {
+  repeated DlqItem list = 1;
+  int64 total = 2;
+  map<string, int64> counts = 3;
+}
+message RetryDlqRequest {
+  string project_id = 1;
+  string dlq_id = 2;
+}
+message DismissDlqRequest {
+  string project_id = 1;
+  string dlq_id = 2;
+  string reason = 3;
+}
+
+// 3.22-3.23 Freeze/Unfreeze (internal, control -> automation)
+message FreezeRulesRequest {
+  string project_id = 1;
+  string reason = 2; // module_disabled|project_archived
+}
+message FreezeRulesResponse {
+  int32 frozen_rules = 1;
+  int32 paused_dlq = 2;
+}
+message UnfreezeRulesRequest {
+  string project_id = 1;
+  string reason = 2; // module_enabled|project_unarchived
+}
+message UnfreezeRulesResponse {
+  int32 unfrozen_rules = 1;
+}
+message ResumePausedDlqRequest {
+  string project_id = 1;
+  string dlq_fate = 2; // discard | deliver
+}
+message ResumePausedDlqResponse {
+  int32 processed = 1;
+}
+
+message ReconcileRuleDependenciesRequest {
+  string project_id = 1;
+  repeated string enabled_modules = 2;
+}
+message ReconcileRuleDependenciesResponse {
+  int32 updated_rules = 1;
+}
+
+message DisableRulesForInactiveActorRequest {
+  string project_id = 1;
+  string actor_user_id = 2;
+}
+message DisableRulesForInactiveActorResponse {
+  int32 disabled_rules = 1;
+}
+
+service AutomationGrpc {
+  rpc ListRules(ListRulesRequest) returns (ListRulesResponse);
+  rpc GetRule(GetRuleRequest) returns (AutomationRule);
+  rpc CreateRule(CreateRuleRequest) returns (AutomationRule);
+  rpc UpdateRule(UpdateRuleRequest) returns (AutomationRule);
+  rpc DeleteRule(DeleteRuleRequest) returns (EmptyResponse);
+  rpc RestoreRule(RestoreRuleRequest) returns (AutomationRule);
+  rpc SetRuleEnabled(SetRuleEnabledRequest) returns (AutomationRule);
+  rpc ExecuteRule(ExecuteRuleRequest) returns (RuleExecution);
+  rpc ManualRun(ManualRunRequest) returns (RuleExecution);
+  rpc DryRun(DryRunRequest) returns (DryRunResponse);
+  rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
+  rpc ListProjectExecutions(ListProjectExecutionsRequest) returns (ListExecutionsResponse);
+  rpc GetRegistry(GetRegistryRequest) returns (GetRegistryResponse);
+  // automation-v2: static graph validation (no save) + node palette (§2.3).
+  rpc ValidateGraph(ValidateGraphRequest) returns (ValidateGraphResponse);
+  rpc GetNodeRegistry(GetNodeRegistryRequest) returns (GetNodeRegistryResponse);
+  rpc ListConnections(ListConnectionsRequest) returns (ListConnectionsResponse);
+  rpc GetConnection(GetConnectionRequest) returns (Connection);
+  rpc CreateConnection(CreateConnectionRequest) returns (Connection);
+  rpc UpdateConnection(UpdateConnectionRequest) returns (Connection);
+  rpc DeleteConnection(DeleteConnectionRequest) returns (EmptyResponse);
+  rpc ListDlq(ListDlqRequest) returns (ListDlqResponse);
+  rpc RetryDlq(RetryDlqRequest) returns (DlqItem);
+  rpc DismissDlq(DismissDlqRequest) returns (DlqItem);
+  rpc HookEvent(HookEventRequest) returns (HookEventResponse);
+  // internal: control -> automation (no public REST facade)
+  rpc FreezeRules(FreezeRulesRequest) returns (FreezeRulesResponse);
+  rpc UnfreezeRules(UnfreezeRulesRequest) returns (UnfreezeRulesResponse);
+  rpc ReconcileRuleDependencies(ReconcileRuleDependenciesRequest) returns (ReconcileRuleDependenciesResponse);
+  rpc DisableRulesForInactiveActor(DisableRulesForInactiveActorRequest) returns (DisableRulesForInactiveActorResponse);
+  rpc ResumePausedDlq(ResumePausedDlqRequest) returns (ResumePausedDlqResponse);
+}

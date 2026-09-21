@@ -1,0 +1,33 @@
+# Migrator/seed image for feature-stands. Unlike Dockerfile.service (runtime, --omit=dev), this
+# carries the FULL workspace incl. devDependencies (ts-node, prisma CLI, typescript) and source so
+# the Argo seed hook can run `npm run seed:all` (prisma migrate deploy + ts-node seeds) FROM THE
+# BRANCH. Also bundles pg + mongodb drivers used by the seed/drop hooks' inline node scripts.
+#
+# Built per branch as <registry>/fairflow/backend/migrator:<sha> (and :latest on main).
+FROM node:22-alpine
+
+WORKDIR /app
+
+# prisma engines need openssl/libc compat on alpine
+RUN apk add --no-cache openssl
+
+# Whole monorepo (node_modules excluded via .dockerignore). All workspace package.json must be
+# present before npm ci so workspace + prisma deps resolve.
+COPY . .
+
+# resilient full install (incl dev deps) — npm registry CDN is intermittently flaky here
+RUN npm config set fetch-retries 6 \
+ && npm config set fetch-retry-mintimeout 20000 \
+ && npm config set fetch-retry-maxtimeout 180000 \
+ && npm config set fetch-timeout 600000 \
+ && for i in 1 2 3 4 5 6; do npm ci && break || { echo "npm ci retry $i"; sleep 5; }; done \
+ && npm run build:shared
+
+# commit provenance for /status.commit — late so it never invalidates the install layers above
+ARG GIT_COMMIT=""
+ARG IMAGE_TAG=""
+ENV GIT_COMMIT=${GIT_COMMIT} \
+    IMAGE_TAG=${IMAGE_TAG}
+
+# default command; the Argo hooks override it (createdb + seed:all, or drop)
+CMD ["npm", "run", "seed:all"]

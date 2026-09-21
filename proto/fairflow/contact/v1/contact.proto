@@ -1,0 +1,291 @@
+syntax = "proto3";
+package fairflow.contact.v1;
+
+// FR-CONTACTS-320: M2M contact↔company link metadata (role, primary, period).
+message CompanyLinkPeriod {
+  int64 from = 1; // epoch ms, 0 = unset
+  int64 to = 2;   // epoch ms, 0 = unset / open-ended
+}
+
+message CompanyLink {
+  string company_id = 1;
+  string role = 2;
+  bool is_primary = 3;
+  CompanyLinkPeriod period = 4;
+  string position = 5;
+}
+
+message Contact {
+  string id = 1;
+  string project_id = 2;
+  string first_name = 3;
+  string last_name = 4;
+  string phone = 5;
+  string email = 6;
+  string middle_name = 7;
+  string position = 8;
+  repeated string company_ids = 9;
+  string source = 10;
+  string owner_id = 11;
+  string department_id = 20;
+  repeated CompanyLink company_links = 21;
+  int64 last_activity_at = 22;
+  repeated string tags = 12;
+  string notes = 13;
+  // FR-MCON-17: компании, удалённые после привязки (предупреждение в UI).
+  repeated string orphaned_company_ids = 19;
+  int64 created_at = 14;
+  int64 updated_at = 15;
+  int64 deleted_at = 16;
+  int64 purge_at = 17;
+  // TODO-161: тени слияний, поглощённые этим контактом, и срок их отката.
+  // Заполняется ТОЛЬКО в GetContact (карточка) — в списках всегда пусто.
+  repeated MergedSource merged_sources = 18;
+}
+
+// TODO-161 (FR-CONTACTS-260): слитый контакт-донор, откат по которому ещё возможен.
+// Идентификация донора, чтобы пользователь понимал, что именно откатывает.
+message MergedSource {
+  string id = 1;
+  string first_name = 2;
+  string last_name = 3;
+  string middle_name = 4;
+  string email = 5;
+  string phone = 6;
+  int64 merged_at = 7;
+  // Крайний срок отката (merged_at + 30 дней), epoch ms.
+  int64 unmerge_until = 8;
+}
+
+message ListContactsRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+  string query = 4;
+  bool include_deleted = 5;
+  // FR-CONTACTS-030/300: серверные фильтры и сортировка списка (по образцу
+  // ListCompaniesRequest). Пустая строка = «фильтр не задан».
+  string source = 6;
+  string owner_id = 7;
+  // sort_by проходит whitelist на шлюзе (CONTACT_SORTABLE_FIELDS: firstName,
+  // lastName, middleName, email, phone, position, source, createdAt, updatedAt);
+  // домен ОБЯЗАН проверить его повторно — gRPC зовут не только через gateway.
+  string sort_by = 8;
+  string sort_dir = 9; // 'asc' | 'desc' (пусто = desc по updatedAt)
+  // FR-CONTACTS-469: csv тегов (AND), пусто = фильтр не задан.
+  string filter_tags = 10;
+  // FR-CONTACTS-467: `__unassigned__` → без ownerId и без departmentId.
+  string owner_scope = 11;
+  // FR-CONTACTS-468: срез «без активности > N дней» (last_activity_at старше).
+  int32 inactive_days = 12;
+  // FR-MCOM-18 / API-GET-companies-contacts: reverse M2M filter by company id.
+  string filter_company_id = 13;
+}
+// GET /contacts/trash — только удалённые (contact trash-listing).
+message ListTrashRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+  string query = 4;
+}
+message ListContactsResponse {
+  repeated Contact list = 1;
+  int64 total = 2;
+  // FR-ACCESS-560: project rows hidden by visibility/ABAC (not user filters).
+  int64 hidden_by_policy = 3;
+}
+message GetContactRequest { string project_id = 1; string id = 2; }
+message CreateContactRequest {
+  string project_id = 1;
+  string first_name = 2;
+  string last_name = 3;
+  string phone = 4;
+  string email = 5;
+  string position = 6;
+  // DEPRECATED (FR-CONTACTS-190): связь контакт↔компании — M2M. Оставлен для
+  // старых клиентов; домен читает company_ids, а company_id — только как фолбэк.
+  string company_id = 7 [deprecated = true];
+  string source = 8;
+  string assignee_id = 9;
+  // FR-CONTACTS-050/170: поля карточки, которые модель уже хранит и отдаёт,
+  // но записать их было нечем — форма редактирования теряла их молча.
+  string middle_name = 10;
+  string notes = 11;
+  repeated string tags = 12;
+  repeated string company_ids = 13;
+  repeated CompanyLink company_links = 16;
+  // FR-CONTACTS-140: развилка при коллизии с записью в корзине.
+  bool force_create = 14;
+  string trash_collision_resolution = 15; // restore | create_new
+  // W-6: подразделение-владелец. Пусто = владелец только пользовательский
+  // (assignee_id). Домен проверяет id по составу подразделений проекта тем же
+  // гейтом, что и ReassignContacts.new_department_id.
+  string department_id = 17;
+}
+message UpdateContactRequest {
+  string project_id = 1;
+  string id = 2;
+  string first_name = 3;
+  string last_name = 4;
+  string phone = 5;
+  string email = 6;
+  string position = 7;
+  string company_id = 8 [deprecated = true];
+  string source = 9;
+  string assignee_id = 10;
+  string middle_name = 11;
+  string notes = 12;
+  // proto3 не различает «поле не прислали» и «прислали пустой список», поэтому
+  // очистку списков клиент запрашивает явными флагами set_*: без флага пустой
+  // repeated означает «не менять» (иначе любой частичный PUT стирал бы теги).
+  repeated string tags = 13;
+  bool set_tags = 14;
+  repeated string company_ids = 15;
+  bool set_company_ids = 16;
+  repeated CompanyLink company_links = 17;
+  bool set_company_links = 18;
+}
+message DeleteContactRequest { string project_id = 1; string id = 2; }
+message RestoreContactRequest { string project_id = 1; string id = 2; string strategy = 3; }
+message ImportContactsRequest {
+  string project_id = 1;
+  bytes file_content = 2;
+  string filename = 3;
+  string mapping_json = 4;
+}
+// FR-CONTACTS-371: почему строка не загрузилась — мастер импорта рисует таблицу
+// «Пропущенные строки», ей нужен номер строки и причина, а не только счётчик.
+message ImportSkippedRow {
+  int32 row = 1;                  // номер строки в файле (1-based, как видит пользователь)
+  string reason = 2;              // 'duplicate' | 'missing_name' | ...
+  string matched_contact_id = 3;  // для дублей — с чем совпало
+  string matched_field = 4;       // 'email' | 'phone'
+}
+message ImportContactsResponse {
+  int32 created = 1;
+  int32 skipped = 2;
+  repeated string errors = 3;
+  int32 updated = 4;
+  repeated ImportSkippedRow skipped_rows = 5;
+}
+
+// --- Duplicate detection (FR-MCON-5/15) ---
+message DuplicateCandidate {
+  string contact_id = 1;
+  string display_name = 2;
+  string matched_on = 3; // 'email' | 'phone'
+  string masked_value = 4;
+  bool deleted = 5; // soft-deleted (trash) — FR-MDEAL-4 «Похожий в корзине»
+}
+message FindDuplicatesRequest {
+  string project_id = 1;
+  string email = 2;
+  string phone = 3;
+  string exclude_id = 4;
+}
+message FindDuplicatesResponse {
+  repeated DuplicateCandidate candidates = 1;
+  bool possible_external_duplicate = 2;
+}
+message DuplicatePair {
+  DuplicateCandidate left = 1;
+  DuplicateCandidate right = 2;
+  string matched_on = 3;
+}
+message ListDuplicateQueueRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+}
+message ListDuplicateQueueResponse {
+  repeated DuplicatePair pairs = 1;
+  int64 total = 2;
+}
+
+// --- Merge / unmerge (FR-MCON-12/13) ---
+message SurvivorField { string field = 1; string from = 2; } // from: 'source' | 'target'
+message MergeContactsRequest {
+  string project_id = 1;
+  string source_id = 2;
+  string target_id = 3;
+  repeated SurvivorField survivor_fields = 4;
+}
+message UnmergeContactRequest { string project_id = 1; string id = 2; }
+
+// --- Reassign (FR-MCON-24) ---
+message ReassignContactsRequest {
+  string project_id = 1;
+  repeated string contact_ids = 2;
+  string new_owner_id = 3;
+  string new_department_id = 4;
+}
+message ReassignContactsResponse { int32 reassigned = 1; }
+
+// FR-CONTACTS-467: пакетное переназначение всех контактов ушедшего владельца.
+message ReassignContactsFromOwnerRequest {
+  string project_id = 1;
+  string from_owner_id = 2;
+  string to_owner_id = 3;
+}
+message ReassignContactsFromOwnerResponse { int32 reassigned = 1; }
+
+// FR-CONTACTS-440 / FR-MCON-20: агрегаты качества базы для reports.
+message GetContactQualityMetricsRequest { string project_id = 1; }
+message GetContactQualityMetricsResponse {
+  int64 total_contacts = 1;
+  double filled_both_pct = 2;
+  int64 duplicate_candidate_pairs = 3;
+  int64 open_drift_links = 4;
+}
+
+// FR-PROJ-215: member-removal owned-record guard (service-triggered, no visibility scope).
+message CountMemberOwnedRecordsRequest {
+  string project_id = 1;
+  string user_id = 2;
+}
+message CountMemberOwnedRecordsResponse { int32 count = 1; }
+message ReassignMemberOwnedRecordsRequest {
+  string project_id = 1;
+  string from_user_id = 2;
+  string to_user_id = 3;
+}
+message ReassignMemberOwnedRecordsResponse { int32 reassigned = 1; }
+
+// TODO-074: RPC GetContactFields (service-only чтение произвольных полей контакта
+// для drift-сравнения, FR-MCON-11) удалён. Он не имел ни visibility-, ни
+// ABAC-проверки, не подтверждал, что вызывающий — сервис, а не проксированный
+// end-user, и при этом отдавал ПДн по списку полей. Потребителей в кодовой базе
+// не было ни одного. Drift-сравнение делается через ResolveDocumentVariables,
+// который проходит полный gate видимости.
+
+// --- Document variable provider (documents.md §4) ---
+message ResolveDocumentVariablesRequest {
+  string project_id = 1;
+  string record_id = 2;
+}
+message ResolveDocumentVariablesResponse {
+  map<string, string> values = 1;      // flat key→value, e.g. {"contact.name":"Иванов Иван"}
+  string source_hash = 2;              // hash of the requisites (drift detection)
+  repeated string empty_required = 3;  // required variables that resolved empty
+}
+
+service ContactGrpc {
+  rpc ResolveDocumentVariables(ResolveDocumentVariablesRequest) returns (ResolveDocumentVariablesResponse);
+  rpc ListContacts(ListContactsRequest) returns (ListContactsResponse);
+  rpc ListTrash(ListTrashRequest) returns (ListContactsResponse);
+  rpc GetContact(GetContactRequest) returns (Contact);
+  rpc CreateContact(CreateContactRequest) returns (Contact);
+  rpc UpdateContact(UpdateContactRequest) returns (Contact);
+  rpc DeleteContact(DeleteContactRequest) returns (Contact);
+  rpc RestoreContact(RestoreContactRequest) returns (Contact);
+  rpc ImportContacts(ImportContactsRequest) returns (ImportContactsResponse);
+  rpc FindDuplicates(FindDuplicatesRequest) returns (FindDuplicatesResponse);
+  rpc ListDuplicateQueue(ListDuplicateQueueRequest) returns (ListDuplicateQueueResponse);
+  rpc MergeContacts(MergeContactsRequest) returns (Contact);
+  rpc UnmergeContact(UnmergeContactRequest) returns (Contact);
+  rpc ReassignContacts(ReassignContactsRequest) returns (ReassignContactsResponse);
+  rpc ReassignContactsFromOwner(ReassignContactsFromOwnerRequest) returns (ReassignContactsFromOwnerResponse);
+  rpc GetContactQualityMetrics(GetContactQualityMetricsRequest) returns (GetContactQualityMetricsResponse);
+  rpc CountMemberOwnedRecords(CountMemberOwnedRecordsRequest) returns (CountMemberOwnedRecordsResponse);
+  rpc ReassignMemberOwnedRecords(ReassignMemberOwnedRecordsRequest) returns (ReassignMemberOwnedRecordsResponse);
+}

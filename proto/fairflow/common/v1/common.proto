@@ -1,0 +1,12 @@
+syntax = "proto3";
+package fairflow.common.v1;
+
+message Empty {}
+
+message PageRequest {
+  int32 page_index = 1;
+  int32 page_size = 2;
+  string sort_key = 3;
+  string sort_order = 4;
+  string query = 5;
+}

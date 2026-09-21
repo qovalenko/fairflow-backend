@@ -1,0 +1,157 @@
+syntax = "proto3";
+package fairflow.search.v1;
+
+import "google/protobuf/struct.proto";
+
+message SearchHit {
+  string id = 1;
+  string entity_type = 2;
+  string entity_id = 3;
+  string title = 4;
+  string subtitle = 5;
+  string path = 6;
+  double score = 7;
+  int64 updated_at = 8;
+}
+
+// Per-type group of hits (FR-MSRCH-2/10): list capped at per_type_limit,
+// type_total counted by Mongo aggregation AFTER the visibility predicate.
+message SearchHitGroup {
+  string entity_type = 1;
+  repeated SearchHit list = 2;
+  int64 type_total = 3;
+}
+
+message SearchRequest {
+  string project_id = 1;
+  string query = 2;
+  int32 page_index = 3;
+  int32 page_size = 4;
+  // WM3 extensions (TZ §6.2):
+  repeated string entity_types = 5; // optional explicit type restriction
+  int32 per_type_limit = 6;         // hits per group (def from settings, 5)
+  string group_by = 7;              // "" | "ownerId" | "departmentId" (FR-MSRCH-30)
+  // TODO-262 / FR-SEARCH-140: UI scope preset «Мои / Мой отдел / Все доступные».
+  // "" | "all" (no narrowing) | "my" (ownerId == viewer) | "dept" (departmentId in
+  // scope_department_ids). STRICTLY a narrowing ANDed ON TOP of the visibility
+  // predicate resolved from x-visibility-scope — it can never widen a read, so an
+  // absent/unknown value degrades to today's behaviour (no extra filter).
+  string owner_scope = 8;
+  // Departments the viewer belongs to, resolved by the GATEWAY from control
+  // (RoleGrpc.ResolvePermissionProjection) — never taken from the client body.
+  // Load-bearing only for owner_scope == "dept"; empty there matches nothing
+  // (fail-closed: no department ⇒ no «мой отдел» records).
+  repeated string scope_department_ids = 9;
+  // TODO-492 / FR-SEARCH-020: resolved by the gateway from project search settings
+  // (personalSettings.minQueryChars). The domain applies the same floor the BFF
+  // enforces so direct gRPC callers cannot bypass a raised threshold; when absent
+  // the domain floor remains 2 (sane default for callers without gateway).
+  int32 min_query_chars = 10;
+}
+message SearchResponse {
+  // Legacy flat list (AS-IS, kept for backward compat).
+  repeated SearchHit list = 1;
+  int64 total = 2;
+  // WM3 extensions:
+  repeated SearchHitGroup groups = 3;
+  map<string, int64> total_by_type = 4;
+  map<string, int64> total_by_owner = 5; // present only when group_by set
+  // TODO-261: a NEXT page exists for at least one returned entity type. The
+  // client cannot derive it — the per-type page size is `per_type_limit` as
+  // RESOLVED by the gateway from the project settings, not the client's
+  // page_size — so the domain, which knows both the per-type totals and the
+  // effective page size, states the fact. Drives the results page's «Вперёд».
+  bool has_more = 6;
+}
+
+message ReindexRequest {
+  string project_id = 1;
+  repeated string entity_types = 2; // optional partial rebuild
+}
+message ReindexResponse {
+  int64 indexed_count = 1;
+  repeated string sources = 2;
+  // TODO-256: true when at least one source was cut off by the optional
+  // SEARCH_REINDEX_MAX_DOCS budget, i.e. the rebuild is INCOMPLETE. The lazy
+  // backfill refuses to stamp `backfilledAt` for such a pass, so it can be
+  // completed later; admins must see it instead of a silently partial index.
+  bool truncated = 3;
+  // Entity types whose pass was cut off (subset of the requested entity_types).
+  repeated string skipped_types = 4;
+}
+
+// Index freshness / lag observability (FR-MSRCH-29).
+message StatusRequest {
+  string project_id = 1;
+}
+message StatusResponse {
+  int64 last_event_processed_at = 1; // ms epoch (0 until delta consumer wired, E3-02)
+  int64 lag_ms = 2;
+  int64 indexed_count = 3;
+  int64 freshness_sla_ms = 4;
+  int64 dead_letter_count = 5;
+}
+
+// Internal service-only RECOVERY API (TODO-488): IndexUpsert/IndexDelete are an
+// alternative/complement to the event delta (OQ-MSRCH-13) for repairing a single
+// index record without a full Reindex. No REST projection and no in-tree caller
+// today — the live delete path uses SearchService.indexDelete in-process — so the
+// contract is deliberately kept as an operator/recovery entry point and is
+// covered by search.grpc.controller.spec.ts. Do not treat it as dead code without
+// the contract owner's decision. owner/department required (no orphan records).
+message IndexUpsertRequest {
+  string project_id = 1;
+  string entity_type = 2;
+  string entity_id = 3;
+  string title = 4;
+  string subtitle = 5;
+  string path = 6;
+  string tokens = 7;
+  string owner_id = 8;
+  string department_id = 9;
+  string owner_field = 10;
+  google.protobuf.Struct abac_attrs = 11;
+  int64 source_updated_at = 12;
+  int64 version = 13;
+}
+
+message IndexDeleteRequest {
+  string project_id = 1;
+  string entity_type = 2;
+  string entity_id = 3;
+  int64 version = 4;
+}
+
+message IndexAck {
+  bool ok = 1;
+}
+
+// FR-ORG-530 / FR-MORG-29: virtual «без владельца» view over the search index.
+message ListUnassignedRequest {
+  string project_id = 1;
+  // contact | deal | order | company | activity | document | all
+  string resource = 2;
+  int32 limit = 3;
+  string cursor = 4;
+}
+message UnassignedRecord {
+  string entity_type = 1;
+  string entity_id = 2;
+  string title = 3;
+  string updated_at = 4;
+}
+message ListUnassignedResponse {
+  repeated UnassignedRecord list = 1;
+  string next_cursor = 2;
+  int32 total = 3;
+}
+
+service SearchGrpc {
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc Reindex(ReindexRequest) returns (ReindexResponse);
+  rpc Status(StatusRequest) returns (StatusResponse);
+  // Internal, service-only (no REST):
+  rpc IndexUpsert(IndexUpsertRequest) returns (IndexAck);
+  rpc IndexDelete(IndexDeleteRequest) returns (IndexAck);
+  rpc ListUnassigned(ListUnassignedRequest) returns (ListUnassignedResponse);
+}

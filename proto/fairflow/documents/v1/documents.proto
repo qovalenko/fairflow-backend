@@ -1,0 +1,395 @@
+syntax = "proto3";
+package fairflow.documents.v1;
+
+// =========================================================================
+// documents domain — DOCX template renderer + immutable versioned store.
+// TO-BE per docs/tz/contracts/documents.md + docs/tz/areas/documents-module/TZ.md.
+// Entities: Template (+ immutable TemplateRevision), DocumentGroup (+ chain of
+// immutable DocumentVersion). Binary files live in S3; Mongo holds metadata.
+// =========================================================================
+
+message Empty {}
+
+// ---- Template ----------------------------------------------------------
+
+message TemplateRevision {
+  int32 version = 1;
+  repeated string declared_variables = 2;
+  string file_hash = 3;
+  string engine = 4;               // docxtemplater (v1)
+  int64 published_at = 5;          // 0 = draft (not published)
+  string created_by = 6;
+  int64 created_at = 7;
+}
+
+message Template {
+  string id = 1;
+  string project_id = 2;
+  string name = 3;
+  string context_type = 4;         // order|deal|contact|company
+  string order_type_id = 5;        // only when context_type=order
+  string status = 6;               // draft|published|archived
+  int32 current_revision = 7;      // 0 = none published
+  int32 draft_revision = 8;        // 0 = no draft
+  string mime_type = 9;
+  string created_by = 10;
+  int64 created_at = 11;
+  int64 updated_at = 12;
+  // populated by GetTemplate only
+  TemplateRevision revision = 13;
+}
+
+message ListTemplatesRequest {
+  string project_id = 1;
+  string context_type = 2;         // optional filter
+  string record_id = 3;            // optional (order → resolve order_type_id)
+  string status = 4;               // optional filter
+  string order_type_id = 5;        // optional (gateway resolves order.type_id) → narrow order templates
+}
+
+message ListTemplatesResponse {
+  repeated Template list = 1;
+}
+
+message GetTemplateRequest {
+  string project_id = 1;
+  string id = 2;
+  int32 version = 3;               // 0 = current revision
+}
+
+// gateway uploads DOCX to S3, passes the storage pointer (binary NOT over gRPC).
+message CreateTemplateRequest {
+  string project_id = 1;
+  string name = 2;
+  string context_type = 3;
+  string order_type_id = 4;
+  string bucket = 5;
+  string object_key = 6;
+  string file_hash = 7;
+  int64 size_bytes = 8;
+  string mime_type = 9;
+  repeated string declared_variables = 10;
+}
+
+message CreateTemplateRevisionRequest {
+  string project_id = 1;
+  string id = 2;                   // template id
+  string name = 3;                 // optional metadata edit
+  string bucket = 4;               // optional new file → new revision
+  string object_key = 5;
+  string file_hash = 6;
+  int64 size_bytes = 7;
+  string mime_type = 8;
+  repeated string declared_variables = 9;
+}
+
+message PublishTemplateRequest {
+  string project_id = 1;
+  string id = 2;
+  int32 version = 3;               // 0 = latest draft
+}
+
+message ArchiveTemplateRequest {
+  string project_id = 1;
+  string id = 2;
+}
+
+message ListTemplateRevisionsRequest {
+  string project_id = 1;
+  string id = 2;
+}
+
+message ListTemplateRevisionsResponse {
+  repeated TemplateRevision list = 1;
+}
+
+message DeleteTemplateRequest {
+  string project_id = 1;
+  string id = 2;
+}
+
+message DeleteTemplateResponse {
+  bool ok = 1;
+}
+
+// Short-lived presigned download of the ORIGINAL DOCX of a template revision.
+message GetTemplateDownloadUrlRequest {
+  string project_id = 1;
+  string id = 2;                   // template id
+  int32 version = 3;               // 0 = current published revision (else latest draft)
+  int32 ttl_sec = 4;               // default 900, server-capped
+}
+
+// ---- Document group / version -----------------------------------------
+
+message DocumentGroup {
+  string group_id = 1;
+  string project_id = 2;
+  string context_type = 3;          // order|deal|contact|company|none
+  string context_record_id = 4;
+  string template_id = 5;
+  string name = 6;
+  // ACL owner = the user who created (generated/uploaded) the document. This is
+  // the field the read gate checks (isRecordVisible), so it is resolved by the
+  // domain from x-user-id and never carries a foreign owner (B2).
+  string owner_id = 7;
+  string owner_department_id = 8;
+  int32 current_version = 9;
+  string generated_via = 10;        // manual|regenerate|automation|upload
+  bool drift_stale = 11;
+  int64 created_at = 12;
+  int64 updated_at = 13;
+  // Denormalized owner of the SOURCE record (deal/order/contact/company) at the
+  // moment of creation. It is the SECOND read-gate subject inside the domain:
+  // visible = viewer may see `owner_id` (creator) OR `context_owner_id` (owner of
+  // the documented record). It is still resolved by the domain/gateway, never
+  // trusted from a client. `context_owner_department_id` is reporting-only.
+  // Department is present only for entities that carry one (deal, company).
+  string context_owner_id = 14;
+  string context_owner_department_id = 15;
+  // Denormalized from the current version for list filters (dept journal / UI).
+  repeated string empty_required_vars = 16;
+  string mime_type = 17;
+}
+
+message DocumentVersion {
+  string version_id = 1;
+  string project_id = 2;
+  string document_group_id = 3;
+  int32 version = 4;
+  string mime_type = 5;
+  int64 size_bytes = 6;
+  string file_hash = 7;
+  string template_id = 8;
+  int32 template_revision = 9;
+  repeated string empty_required_vars = 10;
+  string generated_by = 11;
+  string generated_via = 12;
+  string trigger_event_id = 13;
+  int64 created_at = 14;
+  string bucket = 15;
+  string object_key = 16;
+}
+
+message DriftValueChange {
+  string key = 1;
+  string old_value = 2;
+  string new_value = 3;
+}
+
+message DriftStatus {
+  bool has_drift = 1;
+  repeated string changed_keys = 2;
+  bool source_available = 3;
+  repeated DriftValueChange changed_values = 4;
+}
+
+message GenerateWarnings {
+  repeated string empty_required = 1;
+  repeated string drift_changed_keys = 2;
+  bool has_drift = 3;
+}
+
+message ListDocumentsRequest {
+  string project_id = 1;
+  string context_type = 2;
+  string record_id = 3;
+  string owner_id = 4;
+  bool has_drift = 5;
+  bool has_drift_set = 6;          // distinguishes "unset" from "false"
+  int64 from = 7;
+  int64 to = 8;
+  int32 page_index = 9;
+  int32 page_size = 10;
+  // FR-DOCS-340/390: server-side list filters (name/record search, source kind, mime).
+  string search = 11;
+  string source_kind = 12;         // generated|uploaded (empty = all)
+  string file_type = 13;           // PDF|DOCX|XLSX|PPTX
+  string template_id = 14;
+  bool empty_vars_only = 15;
+  bool empty_vars_only_set = 16;
+}
+
+message ListDocumentsResponse {
+  repeated DocumentGroup list = 1;
+  int64 total = 2;
+}
+
+message GetDocumentRequest {
+  string project_id = 1;
+  string group_id = 2;
+}
+
+message GetDocumentResponse {
+  DocumentGroup group = 1;
+  repeated DocumentVersion versions = 2;
+  DriftStatus drift = 3;
+}
+
+message ListVersionsRequest {
+  string project_id = 1;
+  string group_id = 2;
+}
+
+message ListVersionsResponse {
+  repeated DocumentVersion list = 1;
+}
+
+message GenerateDocumentRequest {
+  string project_id = 1;
+  string template_id = 2;
+  string context_type = 3;
+  string record_id = 4;
+  string use_revision = 5;          // current|source (default current)
+  string trigger_event_id = 6;      // automation idempotency
+  // B2: 7/8 used to be `owner_id`/`owner_department_id` — a caller-supplied value
+  // that landed in the document's ACL owner field and locked the creator out of
+  // his own document. The ACL owner is now derived from x-user-id inside the
+  // domain and CANNOT be set over the wire; the record-owner snapshot moved to
+  // `context_owner_*` (12/13) as pure reporting data.
+  reserved 7, 8;
+  reserved "owner_id", "owner_department_id";
+  // resolved variable map from the context domain (ResolveDocumentVariables).
+  // documents does NOT accept caller-supplied data — gateway only proxies the
+  // donor response. JSON-encoded map<string,string>.
+  string values_json = 9;
+  string source_hash = 10;
+  repeated string empty_required = 11;
+  // Owner of the source record, resolved by the gateway from the SAME donor RPC
+  // the variables come from — second read-gate subject (see DocumentGroup 14/15).
+  string context_owner_id = 12;
+  string context_owner_department_id = 13;
+}
+
+message GenerateDocumentResponse {
+  DocumentGroup group = 1;
+  DocumentVersion version = 2;
+  GenerateWarnings warnings = 3;
+}
+
+message RegenerateDocumentRequest {
+  string project_id = 1;
+  string group_id = 2;
+  string use_revision = 3;          // current|source (default current)
+  int32 expected_version = 4;       // optimistic lock (0 = skip)
+  string values_json = 5;
+  string source_hash = 6;
+  repeated string empty_required = 7;
+}
+
+message UploadDocumentRequest {
+  string project_id = 1;
+  string name = 2;
+  string context_type = 3;          // order|deal|contact|company|none
+  string record_id = 4;
+  string bucket = 5;
+  string object_key = 6;
+  string mime_type = 7;
+  int64 size_bytes = 8;
+  string file_hash = 9;
+  // B2: 10/11 used to be `owner_id`/`owner_department_id` (see GenerateDocumentRequest).
+  reserved 10, 11;
+  reserved "owner_id", "owner_department_id";
+  // Owner of the source record — second read-gate subject (DocumentGroup 14/15).
+  string context_owner_id = 12;
+  string context_owner_department_id = 13;
+}
+
+message UploadDocumentResponse {
+  DocumentGroup group = 1;
+  DocumentVersion version = 2;
+}
+
+message GetDownloadUrlRequest {
+  string project_id = 1;
+  string version_id = 2;
+  int32 ttl_sec = 3;                // default 900, server-capped
+}
+
+message GetDownloadUrlResponse {
+  string url = 1;
+  int64 expires_at = 2;
+}
+
+message CheckDriftRequest {
+  string project_id = 1;
+  string group_id = 2;
+  string source_hash = 3;           // current source hash supplied by gateway
+  repeated string changed_keys = 4; // optional precomputed diff (legacy)
+  bool source_available = 5;
+  string current_values_json = 6;   // current donor map for value-level diff
+}
+
+message CheckDriftBatchRequest {
+  string project_id = 1;
+  repeated string group_ids = 2;
+}
+
+message CheckDriftBatchItem {
+  string group_id = 1;
+  DriftStatus drift = 2;
+}
+
+message CheckDriftBatchResponse {
+  repeated CheckDriftBatchItem items = 1;
+}
+
+message DeleteDocumentRequest {
+  string project_id = 1;
+  string group_id = 2;
+}
+
+message DeleteDocumentResponse {
+  bool ok = 1;
+}
+
+// box-провижининг: посеять 1–2 стартовых опубликованных шаблона на новый проект,
+// чтобы библиотека шаблонов не была пустой из коробки (BX-DOCS-5 / §2.8 G5).
+message ProvisionDefaultsRequest {
+  string project_id = 1;
+  repeated string enabled_modules = 2;
+}
+message ProvisionDefaultsResponse {
+  bool created = 1;
+  int32 templates_created = 2;
+}
+
+// FR-PROJ-215
+message CountMemberOwnedRecordsRequest {
+  string project_id = 1;
+  string user_id = 2;
+}
+message CountMemberOwnedRecordsResponse { int32 count = 1; }
+message ReassignMemberOwnedRecordsRequest {
+  string project_id = 1;
+  string from_user_id = 2;
+  string to_user_id = 3;
+}
+message ReassignMemberOwnedRecordsResponse { int32 reassigned = 1; }
+
+service DocumentsGrpc {
+  // templates
+  rpc ProvisionDefaults(ProvisionDefaultsRequest) returns (ProvisionDefaultsResponse);
+  rpc ListTemplates(ListTemplatesRequest) returns (ListTemplatesResponse);
+  rpc GetTemplate(GetTemplateRequest) returns (Template);
+  rpc CreateTemplate(CreateTemplateRequest) returns (Template);
+  rpc CreateTemplateRevision(CreateTemplateRevisionRequest) returns (Template);
+  rpc PublishTemplate(PublishTemplateRequest) returns (Template);
+  rpc ArchiveTemplate(ArchiveTemplateRequest) returns (Template);
+  rpc ListTemplateRevisions(ListTemplateRevisionsRequest) returns (ListTemplateRevisionsResponse);
+  rpc GetTemplateDownloadUrl(GetTemplateDownloadUrlRequest) returns (GetDownloadUrlResponse);
+  rpc DeleteTemplate(DeleteTemplateRequest) returns (DeleteTemplateResponse);
+  // documents
+  rpc ListDocuments(ListDocumentsRequest) returns (ListDocumentsResponse);
+  rpc GetDocument(GetDocumentRequest) returns (GetDocumentResponse);
+  rpc ListVersions(ListVersionsRequest) returns (ListVersionsResponse);
+  rpc GenerateDocument(GenerateDocumentRequest) returns (GenerateDocumentResponse);
+  rpc RegenerateDocument(RegenerateDocumentRequest) returns (GenerateDocumentResponse);
+  rpc UploadDocument(UploadDocumentRequest) returns (UploadDocumentResponse);
+  rpc GetDownloadUrl(GetDownloadUrlRequest) returns (GetDownloadUrlResponse);
+  rpc CheckDrift(CheckDriftRequest) returns (DriftStatus);
+  rpc CheckDriftBatch(CheckDriftBatchRequest) returns (CheckDriftBatchResponse);
+  rpc DeleteDocument(DeleteDocumentRequest) returns (DeleteDocumentResponse);
+  rpc CountMemberOwnedRecords(CountMemberOwnedRecordsRequest) returns (CountMemberOwnedRecordsResponse);
+  rpc ReassignMemberOwnedRecords(ReassignMemberOwnedRecordsRequest) returns (ReassignMemberOwnedRecordsResponse);
+}

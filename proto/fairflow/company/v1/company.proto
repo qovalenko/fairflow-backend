@@ -1,0 +1,276 @@
+syntax = "proto3";
+package fairflow.company.v1;
+
+message Company {
+  string id = 1;
+  string project_id = 2;
+  string name = 3;
+  string inn = 4;
+  string phone = 5;
+  string email = 6;
+  string industry = 7;
+  string owner_id = 8;
+  repeated string tags = 9;
+  string notes = 10;
+  int64 created_at = 11;
+  int64 updated_at = 12;
+  // TO-BE extension (FR-MCOM, company.md §1).
+  string kpp = 13;
+  string legal_address = 14;
+  string ogrn = 15;
+  string website = 16;
+  string domain = 17;
+  string status = 18;
+  string department_id = 19;
+  string region = 20;
+  int64 deleted_at = 21;
+  // TODO-364: атрибуция карточки. Домен уже хранит их в Mongo (CompanyDoc.createdBy/
+  // updatedBy/source) — без этих полей блок «Создал / Изменил» в карточке компании
+  // не мог отрендериться никогда: gateway домапливал created_by/updated_by, которых
+  // в контракте не существовало.
+  string created_by = 22;
+  string updated_by = 23;
+  string source = 24;   // manual|import|api|drawer
+  // Bank requisites (FR-COMPANIES-380 / company.md §5.1).
+  string bank_name = 25;
+  string bik = 26;
+  string correspondent_account = 27;
+  string settlement_account = 28;
+  // Bumped by contact-link events to invalidate gateway card cache (FR-COMPANIES-220).
+  int64 card_contacts_rev = 29;
+}
+
+message ListCompaniesRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+  string query = 4;
+  // TO-BE filters/sort (company.md §3.1).
+  string filter_owner_id = 5;
+  string filter_department_id = 6;
+  string filter_status = 7;
+  string filter_industry = 8;
+  string filter_region = 9;
+  string filter_tags = 10; // csv
+  string sort_by = 11; // updatedAt|name|createdAt
+  string sort_dir = 12; // asc|desc
+  bool include_deleted = 13;
+}
+message ListCompaniesResponse {
+  repeated Company list = 1;
+  int64 total = 2;
+  // FR-ACCESS-560: project rows hidden by visibility/ABAC (not user filters).
+  int64 hidden_by_policy = 3;
+}
+message GetCompanyRequest { string project_id = 1; string id = 2; }
+message CreateCompanyRequest {
+  string project_id = 1;
+  string name = 2;
+  string inn = 3;
+  string phone = 4;
+  string email = 5;
+  string industry = 6;
+  string assignee_id = 7;
+  // TO-BE fields (company.md §3.6).
+  string kpp = 8;
+  string ogrn = 9;
+  string website = 10;
+  string status = 11;
+  string department_id = 12;
+  string region = 13;
+  string legal_address = 14;
+  repeated string tags = 15;
+  string notes = 16;
+  string bank_name = 17;
+  string bik = 18;
+  string correspondent_account = 19;
+  string settlement_account = 20;
+  // restore | create_new when a trashed duplicate matches (FR-COMPANIES-100).
+  string trash_collision_resolution = 21;
+}
+message UpdateCompanyRequest {
+  string project_id = 1;
+  string id = 2;
+  string name = 3;
+  string inn = 4;
+  string phone = 5;
+  string email = 6;
+  string industry = 7;
+  string assignee_id = 8;
+  string kpp = 9;
+  string ogrn = 10;
+  string website = 11;
+  string status = 12;
+  string department_id = 13;
+  string region = 14;
+  string legal_address = 15;
+  repeated string tags = 16;
+  string notes = 17;
+  string bank_name = 18;
+  string bik = 19;
+  string correspondent_account = 20;
+  string settlement_account = 21;
+}
+message DeleteCompanyRequest { string project_id = 1; string id = 2; }
+
+// DELETE /companies/:id?force=true — hard-delete of a record ALREADY IN THE TRASH
+// («удалить навсегда», company.md §3.10 / FR-COMPANIES-040). Distinct from
+// DeleteCompany, which only soft-deletes (sets deleted_at). Physically drops the
+// document plus every merge shadow copy that references it, and emits
+// `crm.company.purged`.
+message PurgeCompanyRequest { string project_id = 1; string id = 2; }
+message PurgeCompanyResponse {
+  string id = 1;
+  bool purged = 2;
+}
+message RestoreCompanyRequest {
+  string project_id = 1;
+  string id = 2;
+  // ResolveRestore strategy on collision: merge|clear_key|as_new (company.md §3.11).
+  string strategy = 3;
+}
+
+// PATCH /owner (company.md §3.8).
+message UpdateOwnerRequest {
+  string project_id = 1;
+  string id = 2;
+  string owner_id = 3;
+  string department_id = 4;
+}
+
+// GET /trash (company.md §3.10).
+message ListTrashRequest {
+  string project_id = 1;
+  int32 page_index = 2;
+  int32 page_size = 3;
+  string query = 4;
+}
+
+// GET /duplicates (company.md §3.12).
+message FindDuplicatesRequest {
+  string project_id = 1;
+  string inn = 2;
+  string name = 3;
+  string domain = 4;
+  // TODO-362: dedup by e-mail/site domain — the domain is derived server-side when
+  // `domain` is not passed explicitly (the form only has these two fields).
+  string email = 5;
+  string website = 6;
+}
+message DuplicateCandidate {
+  string id = 1;
+  string name = 2;
+  string inn = 3;
+  string match_reason = 4;
+  // TODO-362: candidate is in the trash. It does NOT hold the identity key (soft
+  // delete unsets identityHash), so this is not about a 409 — it is about not letting
+  // the user create a third copy of a company that is already in their own trash.
+  // The UI must offer "restore from trash" instead of a plain "open", and must keep
+  // such a candidate out of the merge targets (merge reads live rows only).
+  bool deleted = 5;
+}
+message FindDuplicatesResponse { repeated DuplicateCandidate candidates = 1; }
+
+// GET /aggregate (company.md §3.13).
+message AggregateCompaniesRequest {
+  string project_id = 1;
+  string group_by = 2; // ownerId|departmentId|industry|region|status
+}
+message AggregateGroup { string key = 1; int64 count = 2; }
+message AggregateCompaniesResponse { repeated AggregateGroup groups = 1; }
+
+// POST /merge/preview (company.md §3.14).
+message PreviewMergeRequest {
+  string project_id = 1;
+  string master_id = 2;
+  string loser_id = 3;
+}
+message FieldConflict { string field = 1; string master = 2; string loser = 3; }
+message PreviewMergeResponse { repeated FieldConflict field_conflicts = 1; }
+
+// POST /merge (company.md §3.15).
+message FieldDecision { string field = 1; string winner = 2; } // winner: master|loser
+message MergeCompaniesRequest {
+  string project_id = 1;
+  string master_id = 2;
+  string loser_id = 3;
+  repeated FieldDecision field_decisions = 4;
+  string actor_id = 5;
+}
+message MergeCompaniesResponse {
+  string master_id = 1;
+  string loser_id = 2;
+  string archive_id = 3;
+  string merge_state = 4;
+}
+
+// POST /merge/:archiveId/restore (company.md §3.16).
+message RestoreMergeRequest {
+  string project_id = 1;
+  string archive_id = 2;
+}
+message RestoreMergeResponse {
+  string loser_id = 1;
+  string master_id = 2;
+  bool restored = 3;
+}
+
+message ImportCompaniesRequest {
+  string project_id = 1;
+  bytes file_content = 2;
+  string filename = 3;
+  string mapping_json = 4;
+  string dedup_mode = 5; // skip|update|create
+}
+message ImportRowError { int32 row = 1; string message = 2; }
+message ImportCompaniesResponse {
+  int32 created = 1;
+  int32 skipped = 2;
+  int32 updated = 3;
+  repeated ImportRowError errors = 4;
+}
+
+// --- Document variable provider (documents.md §4) ---
+message ResolveDocumentVariablesRequest {
+  string project_id = 1;
+  string record_id = 2;
+}
+message ResolveDocumentVariablesResponse {
+  map<string, string> values = 1;      // flat key→value, e.g. {"company.inn":"7701..."}
+  string source_hash = 2;              // hash of the requisites (drift detection)
+  repeated string empty_required = 3;  // required variables that resolved empty
+}
+
+// FR-PROJ-215
+message CountMemberOwnedRecordsRequest {
+  string project_id = 1;
+  string user_id = 2;
+}
+message CountMemberOwnedRecordsResponse { int32 count = 1; }
+message ReassignMemberOwnedRecordsRequest {
+  string project_id = 1;
+  string from_user_id = 2;
+  string to_user_id = 3;
+}
+message ReassignMemberOwnedRecordsResponse { int32 reassigned = 1; }
+
+service CompanyGrpc {
+  rpc ResolveDocumentVariables(ResolveDocumentVariablesRequest) returns (ResolveDocumentVariablesResponse);
+  rpc ListCompanies(ListCompaniesRequest) returns (ListCompaniesResponse);
+  rpc GetCompany(GetCompanyRequest) returns (Company);
+  rpc CreateCompany(CreateCompanyRequest) returns (Company);
+  rpc UpdateCompany(UpdateCompanyRequest) returns (Company);
+  rpc UpdateOwner(UpdateOwnerRequest) returns (Company);
+  rpc DeleteCompany(DeleteCompanyRequest) returns (Company);
+  rpc PurgeCompany(PurgeCompanyRequest) returns (PurgeCompanyResponse);
+  rpc RestoreCompany(RestoreCompanyRequest) returns (Company);
+  rpc ListTrash(ListTrashRequest) returns (ListCompaniesResponse);
+  rpc FindDuplicates(FindDuplicatesRequest) returns (FindDuplicatesResponse);
+  rpc AggregateCompanies(AggregateCompaniesRequest) returns (AggregateCompaniesResponse);
+  rpc PreviewMerge(PreviewMergeRequest) returns (PreviewMergeResponse);
+  rpc MergeCompanies(MergeCompaniesRequest) returns (MergeCompaniesResponse);
+  rpc RestoreMerge(RestoreMergeRequest) returns (RestoreMergeResponse);
+  rpc ImportCompanies(ImportCompaniesRequest) returns (ImportCompaniesResponse);
+  rpc CountMemberOwnedRecords(CountMemberOwnedRecordsRequest) returns (CountMemberOwnedRecordsResponse);
+  rpc ReassignMemberOwnedRecords(ReassignMemberOwnedRecordsRequest) returns (ReassignMemberOwnedRecordsResponse);
+}

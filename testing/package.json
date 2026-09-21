@@ -1,0 +1,34 @@
+{
+  "name": "@fairflow/testing",
+  "version": "1.0.0",
+  "description": "Shared backend test utilities (metadata/gRPC mocks, entity factories, PG/Mongo integration harness) for Fairflow services",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "check": "tsc --noEmit",
+    "test": "jest --passWithNoTests"
+  },
+  "dependencies": {
+    "@fairflow/shared": "*",
+    "amqplib": "^0.10.5",
+    "@grpc/grpc-js": "^1.12.4",
+    "@grpc/proto-loader": "^0.7.15",
+    "mongodb": "^6.12.0",
+    "pg": "^8.13.0",
+    "rxjs": "^7.8.1",
+    "uuidv7": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.7",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.19.15",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}
